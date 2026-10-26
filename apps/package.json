@@ -1,0 +1,51 @@
+{
+	"name": "svelte",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "bun --no-env-file scripts/with-env.ts development -- bun --no-env-file --bun vite dev",
+		"build": "bun --no-env-file scripts/with-env.ts production -- bun --no-env-file --bun vite build",
+		"build:dev": "bun --no-env-file scripts/with-env.ts development -- bun --no-env-file --bun vite build",
+		"build:test": "bun --no-env-file scripts/with-env.ts test -- bun --no-env-file --bun vite build",
+		"build:prod": "bun --no-env-file scripts/with-env.ts production -- bun --no-env-file --bun vite build",
+		"start": "bun --no-env-file scripts/with-env.ts production -- bun --no-env-file --bun ./build",
+		"start:dev": "bun --no-env-file scripts/with-env.ts development -- bun --no-env-file --bun ./build",
+		"start:test": "bun --no-env-file scripts/with-env.ts test -- bun --no-env-file --bun ./build",
+		"start:prod": "bun --no-env-file scripts/with-env.ts production -- bun --no-env-file --bun ./build",
+		"prepare": "svelte-kit sync || echo ''",
+		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && tsc -p src/service-worker --noEmit",
+		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
+		"lint": "eslint .",
+		"test": "vitest run",
+		"budget": "bun scripts/check-budget.ts",
+		"i18n:build": "bun scripts/i18n-build.ts"
+	},
+	"devDependencies": {
+		"@eslint/js": "^10.0.1",
+		"@sveltejs/adapter-bun": "^1.0.0",
+		"@sveltejs/kit": "^3.0.0",
+		"@sveltejs/vite-plugin-svelte": "^7.2.0",
+		"@tailwindcss/vite": "^4.3.0",
+		"@types/node": "^24",
+		"eslint": "^10.4.1",
+		"eslint-plugin-svelte": "^3.19.0",
+		"globals": "^17.6.0",
+		"hls.js": "1.7.3",
+		"svelte": "^5.57.1",
+		"svelte-check": "^4.6.0",
+		"tailwindcss": "^4.3.0",
+		"typescript": "^6.0.3",
+		"typescript-eslint": "^8.60.1",
+		"vite": "^8.3.0",
+		"vitest": "5.0.5"
+	},
+	"imports": {
+		"#lib": "./src/lib/index.js",
+		"#lib/*": "./src/lib/*"
+	},
+	"packageManager": "bun@1.4.2",
+	"engines": {
+		"bun": ">=1.4.0"
+	}
+}

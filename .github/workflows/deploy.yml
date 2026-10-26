@@ -1,0 +1,299 @@
+name: Deploy
+
+# 主干合入即发布（docs/11 X0-6）。顺序：
+#   构建并推镜像 → 前端静态产物传 R2 → SSH 到服务器拉镜像、迁移、起服务、重载边缘层
+#
+# 前端静态产物是从**刚构建出来的镜像里**拷出来再上传的，不是另外构建一遍。
+# 这样 CDN 上的文件和镜像里的文件必然是同一份 —— 两次构建的内容哈希对不上的话，
+# 页面会去 CDN 取一个不存在的文件名，而且只在生产复现。
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: 构建完是否部署到服务器
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  # 服务器 CPU 架构。arm64 机器改成 linux/arm64
+  PLATFORM: linux/amd64
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      prefix: ${{ steps.meta.outputs.prefix }}
+      tag: ${{ steps.meta.outputs.tag }}
+      cdn: ${{ steps.meta.outputs.cdn }}
+    steps:
+      - id: meta
+        env:
+          # 静态资源域名固定为 https://cdn.duanju66.cc（R2 的自定义域）。
+          # 仓库变量 CDN_BASE 只在要换域名时才需要设，平时不用管。
+          CDN_BASE: ${{ vars.CDN_BASE }}
+        run: |
+          set -euo pipefail
+          # GHCR 的仓库名必须全小写，github.repository 可能带大写
+          prefix="ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
+          tag="${GITHUB_SHA::12}"
+          cdn="${CDN_BASE:-https://cdn.duanju66.cc}"
+          cdn="${cdn%/}"
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag"       >> "$GITHUB_OUTPUT"
+          echo "cdn=$cdn"       >> "$GITHUB_OUTPUT"
+          echo "镜像前缀 $prefix，标签 $tag，静态资源 CDN $cdn"
+
+  # ------------------------------------------------------------------ 后端与基础镜像
+  backend:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # 后端 API + 通用 worker + admintool（distroless 默认目标）
+          - name: service
+            context: service
+            target: ''
+          # 转封装 worker：带 FFmpeg，不能用 distroless
+          - name: media-worker
+            context: service
+            target: media-worker
+          # PG 18 + pg_bigm。Dockerfile 与本地开发共用，保证扩展版本一致
+          - name: postgres
+            context: deploy/local/postgres
+            target: ''
+          - name: edge
+            context: deploy/prod/nginx
+            target: ''
+          - name: certbot
+            context: deploy/prod/certbot
+            target: ''
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 登录镜像仓库
+        run: echo '${{ secrets.GITHUB_TOKEN }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+
+      - name: 准备 buildx
+        run: docker buildx create --name xsite --driver docker-container --use
+
+      - name: 构建并推送 ${{ matrix.name }}
+        env:
+          IMAGE: ${{ needs.prepare.outputs.prefix }}/${{ matrix.name }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          args=(--platform "$PLATFORM"
+                --tag "$IMAGE:$TAG" --tag "$IMAGE:latest"
+                --cache-from "type=registry,ref=$IMAGE:buildcache"
+                --cache-to   "type=registry,ref=$IMAGE:buildcache,mode=max"
+                --provenance=false
+                --push)
+          if [[ -n '${{ matrix.target }}' ]]; then
+            args+=(--target '${{ matrix.target }}')
+          fi
+          docker buildx build "${args[@]}" '${{ matrix.context }}'
+
+  # ------------------------------------------------------------------ 用户端前台
+  # apps 刻意不接独立 CDN 域名：SvelteKit 不允许 Service Worker 与 paths.assets 共存
+  # （构建期直接报 service_worker_assets 并失败），而 Service Worker 是产品功能
+  # （docs/04 D 节的离线兜底）。它的边缘加速靠把 duanju66.cc 整体挂到 Cloudflare 代理后面，
+  # /_app/immutable/* 在同源地址上被边缘缓存。详见 deploy/prod/README.md 第 4 节。
+  #
+  # 压缩不受影响：adapter-bun 构建期就生成了 .br / .gz（Brotli 11），运行时直接送。
+  apps:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 登录镜像仓库
+        run: echo '${{ secrets.GITHUB_TOKEN }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+
+      - name: 准备 buildx
+        run: docker buildx create --name xsite --driver docker-container --use
+
+      - name: 构建并推送 apps
+        env:
+          IMAGE: ${{ needs.prepare.outputs.prefix }}/apps
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --platform "$PLATFORM" \
+            --tag "$IMAGE:$TAG" --tag "$IMAGE:latest" \
+            --cache-from "type=registry,ref=$IMAGE:buildcache" \
+            --cache-to   "type=registry,ref=$IMAGE:buildcache,mode=max" \
+            --provenance=false --push \
+            apps
+
+  # ------------------------------------------------------------------ 后台与反馈社区 + CDN
+  frontend:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # 构建期注入的资源前缀必须和 cdn-upload.sh 的上传前缀一一对应
+          - name: admin
+            context: admin
+            cdn_suffix: /admin/
+            build_arg: ADMIN_ASSET_BASE
+            static_in_image: /app/dist
+          - name: feedback
+            context: feedback
+            cdn_suffix: /feedback
+            build_arg: NEXT_ASSET_PREFIX
+            static_in_image: /app/.next/static
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 登录镜像仓库
+        run: echo '${{ secrets.GITHUB_TOKEN }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+
+      - name: 准备 buildx
+        run: docker buildx create --name xsite --driver docker-container --use
+
+      # --load 把镜像装进本地 docker，才能把静态产物拷出来。先不 push，
+      # 等产物上传成功再 push —— 免得出现「镜像已发布但 CDN 上没有它要的脚本」
+      - name: 构建 ${{ matrix.name }}
+        env:
+          IMAGE: ${{ needs.prepare.outputs.prefix }}/${{ matrix.name }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          PREFIX: ${{ needs.prepare.outputs.cdn }}${{ matrix.cdn_suffix }}
+        run: |
+          set -euo pipefail
+          echo "资源前缀：${{ matrix.build_arg }}=$PREFIX"
+          docker buildx build \
+            --platform "$PLATFORM" \
+            --build-arg "${{ matrix.build_arg }}=$PREFIX" \
+            --tag "$IMAGE:$TAG" --tag "$IMAGE:latest" \
+            --cache-from "type=registry,ref=$IMAGE:buildcache" \
+            --cache-to   "type=registry,ref=$IMAGE:buildcache,mode=max" \
+            --provenance=false \
+            --load \
+            '${{ matrix.context }}'
+
+      - name: 从镜像里取出静态产物
+        env:
+          IMAGE: ${{ needs.prepare.outputs.prefix }}/${{ matrix.name }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          cid=$(docker create "$IMAGE:$TAG")
+          trap 'docker rm -f "$cid" >/dev/null' EXIT
+          mkdir -p cdn-out
+          # 路径后面的 /. 是关键：没有它 docker cp 会把目录自身嵌一层进去
+          docker cp "$cid:${{ matrix.static_in_image }}/." cdn-out/
+          total=$(find cdn-out -type f ! -name '*.br' ! -name '*.gz' | wc -l)
+          br=$(find cdn-out -name '*.br' | wc -l)
+          echo "产物 $total 个文件，其中 $br 个有 .br 预压缩"
+          # 预压缩文件是给边缘层 brotli_static 用的，不上 CDN（见 cdn-upload.sh 的说明），
+          # 但一个都没有说明构建漏了预压缩这一步，直接失败比上线后发现慢好
+          [[ $br -gt 0 ]] || { echo "没有找到任何 .br，预压缩步骤没有执行" >&2; exit 1; }
+
+      - name: 上传到 R2
+        env:
+          R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+        run: ./deploy/prod/scripts/cdn-upload.sh '${{ matrix.name }}' cdn-out
+
+      - name: 推送镜像
+        env:
+          IMAGE: ${{ needs.prepare.outputs.prefix }}/${{ matrix.name }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          docker push "$IMAGE:$TAG"
+          docker push "$IMAGE:latest"
+
+  # ------------------------------------------------------------------ 服务器
+  deploy:
+    needs: [prepare, backend, apps, frontend]
+    if: github.event_name == 'push' || inputs.deploy
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 准备 SSH
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          : "${SSH_KEY:?缺少 DEPLOY_SSH_KEY}"
+          # 刻意不用 StrictHostKeyChecking=no：那等于接受任何冒充服务器的主机。
+          # 生成方式：ssh-keyscan -H <服务器地址>，把输出放进 DEPLOY_KNOWN_HOSTS
+          : "${KNOWN_HOSTS:?缺少 DEPLOY_KNOWN_HOSTS}"
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY"     > ~/.ssh/id_deploy
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_deploy ~/.ssh/known_hosts
+
+      - name: 同步部署文件
+        env:
+          SSH_HOST: ${{ secrets.DEPLOY_HOST }}
+          SSH_USER: ${{ secrets.DEPLOY_USER }}
+          PATH_ON_SERVER: ${{ vars.DEPLOY_PATH }}
+        run: |
+          set -euo pipefail
+          path=${PATH_ON_SERVER:-/opt/xsite}
+          # 只打包 deploy/prod，且里面没有 .env（它在服务器上，由运维维护，绝不被覆盖）
+          tar -czf /tmp/xsite-prod.tgz -C deploy prod
+          scp -i ~/.ssh/id_deploy /tmp/xsite-prod.tgz "$SSH_USER@$SSH_HOST:/tmp/xsite-prod.tgz"
+          ssh -i ~/.ssh/id_deploy "$SSH_USER@$SSH_HOST" \
+            "set -e; mkdir -p '$path'; tar -xzf /tmp/xsite-prod.tgz -C '$path' --strip-components=1; rm -f /tmp/xsite-prod.tgz"
+
+      - name: 拉镜像并发布
+        env:
+          SSH_HOST: ${{ secrets.DEPLOY_HOST }}
+          SSH_USER: ${{ secrets.DEPLOY_USER }}
+          PATH_ON_SERVER: ${{ vars.DEPLOY_PATH }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          path=${PATH_ON_SERVER:-/opt/xsite}
+          # 用本次工作流的临时令牌登录，服务器上不长期存放仓库凭据
+          printf '%s' "$GHCR_TOKEN" | ssh -i ~/.ssh/id_deploy "$SSH_USER@$SSH_HOST" \
+            "docker login ghcr.io -u '${{ github.actor }}' --password-stdin"
+          ssh -i ~/.ssh/id_deploy "$SSH_USER@$SSH_HOST" \
+            "cd '$path' && ./scripts/deploy.sh '$TAG'"
+          ssh -i ~/.ssh/id_deploy "$SSH_USER@$SSH_HOST" "docker logout ghcr.io"
+
+      - name: 对外验活
+        env:
+          APPS_DOMAIN: ${{ vars.APPS_DOMAIN }}
+          ADMIN_DOMAIN: ${{ vars.ADMIN_DOMAIN }}
+          FEEDBACK_DOMAIN: ${{ vars.FEEDBACK_DOMAIN }}
+        run: |
+          set -uo pipefail
+          fail=0
+          check() {
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$1" || echo 000)
+            printf '  %-60s %s\n' "$1" "$code"
+            [[ $code == "$2" ]] || fail=1
+          }
+          [[ -n "${APPS_DOMAIN:-}" ]]     && check "https://$APPS_DOMAIN/api/v1/health" 200
+          [[ -n "${ADMIN_DOMAIN:-}" ]]    && check "https://$ADMIN_DOMAIN/" 200
+          [[ -n "${FEEDBACK_DOMAIN:-}" ]] && check "https://$FEEDBACK_DOMAIN/" 200
+          if [[ $fail -ne 0 ]]; then
+            echo "对外验活未全部通过。首次部署常见原因：证书还没签发完（自签占位会让 curl 校验失败），" >&2
+            echo "或 DNS 还没指到本机。服务器上 docker compose logs certbot 能看到原因。" >&2
+            exit 1
+          fi

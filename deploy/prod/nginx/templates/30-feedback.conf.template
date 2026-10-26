@@ -1,0 +1,70 @@
+# 反馈社区前台（feedback/，Next.js 16）。
+#
+# 浏览器只与这个域名同源通信，由 Next.js 的服务端带 X-Service-Token 转发到 Go
+# （feedback/docs/adr/0008）。只有 /open-api/feedback 是站外网页直接提交的入口，
+# 它在 Go 侧免回源鉴权、改用 X-Api-Key + Key 上的 Origin 白名单（feedback/docs/adr/0009）。
+upstream xsite_feedback {
+    server feedback:3002;
+    keepalive 32;
+}
+
+server {
+    listen      443 ssl;
+    listen      [::]:443 ssl;
+    listen      443 quic;
+    listen      [::]:443 quic;
+    http2       on;
+    http3       on;
+    server_name ${FEEDBACK_DOMAIN};
+
+    ssl_certificate     /etc/nginx/certs/${FEEDBACK_DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/nginx/certs/${FEEDBACK_DOMAIN}/privkey.pem;
+    include /etc/nginx/snippets/tls.conf;
+    include /etc/nginx/snippets/https-headers.conf;
+
+    limit_req  zone=edge_pages burst=40 nodelay;
+    limit_conn edge_conn 64;
+
+    # 单条反馈正文 + 环境信息，1m 够用；真要传附件走对象存储直传，不经这里
+    client_max_body_size 1m;
+
+    # 带内容哈希的产物，由这一层直接从磁盘发（/srv/feedback 是 compose 的 feedback_static 卷，
+    # 由一次性服务 feedback-assets 从镜像里导出，见 feedback/export-assets.sh）。
+    #
+    # 为什么不交给 Next.js：next start 不会去找构建期压好的 .br / .gz，只会按请求现压，而且只有
+    # gzip。这里用 brotli_static 把 Brotli 11 的文件原样送出去，既最小又零 CPU。
+    # 接了 CDN 以后浏览器从 cdn.<域名> 取，这条路径是回源与直连的兜底。
+    location /_next/static/ {
+        alias /srv/feedback/current/;
+        include /etc/nginx/snippets/static-immutable.conf;
+        try_files $uri =404;
+    }
+
+    # 站外页面的 JS 直接 POST 到这里。CORS 由 Go 侧 handler 按 API Key 的 Origin 白名单回，
+    # nginx 不要自己加 Access-Control-* 头，否则会出现两份、浏览器直接拒收。
+    location = /open-api/feedback {
+        proxy_pass http://xsite_service;
+        include /etc/nginx/snippets/proxy.conf;
+        proxy_set_header X-Edge-Secret "${EDGE_SHARED_SECRET}";
+        proxy_set_header Accept-Encoding "";
+    }
+
+    location /open-api/ {
+        return 404;
+    }
+
+    location / {
+        proxy_pass http://xsite_feedback;
+        include /etc/nginx/snippets/proxy.conf;
+
+        # 要空字符串，不是不写。
+        # Next.js 的 compress: true 只会 gzip；不清掉的话它按浏览器的 Accept-Encoding 先压好，
+        # nginx 收到带 Content-Encoding 的响应就不再处理，HTML 永远拿不到 Brotli。
+        # 清掉以后由 nginx 实时压（br 优先，5 档）。
+        # 这和 apps 的处理相反：apps 自己就会 br，而且静态文件走预压缩，不能清。
+        proxy_set_header Accept-Encoding "";
+
+        # 登录用户看到的页面各不相同，边缘不缓存（缓存串号会把别人的私密反馈发给错的人）
+        proxy_buffering off;
+    }
+}

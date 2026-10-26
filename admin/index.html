@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      静态资源 CDN。图标、Logo 以及带内容哈希的 assets/（构建期由 ADMIN_ASSET_BASE 指过去）
+      都从这里取，提前建好连接省掉首屏上 DNS + TCP + TLS 的一整个来回。
+      写两条不是笔误：浏览器的连接池按「是否带 CORS」分开 —— 模块脚本一律按 CORS 模式取，
+      而 <link rel="icon"> 是 no-cors。
+    -->
+    <link rel="preconnect" href="https://cdn.duanju66.cc" />
+    <link rel="preconnect" href="https://cdn.duanju66.cc" crossorigin="anonymous" />
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="https://cdn.duanju66.cc/static/logo.webp"
+      media="(prefers-color-scheme: light)"
+    />
+    <link
+      rel="icon"
+      type="image/png"
+      href="https://cdn.duanju66.cc/static/logo.webp"
+      media="(prefers-color-scheme: light)"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <title>短剧运营后台</title>
+
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="theme-color" content="#fff" />
+  </head>
+
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,7 @@
+# 构建上下文排除项。testdata 里有本地测试素材与 GeoIP 样本，生产镜像不需要。
+tmp
+.env
+.env.*
+.DS_Store
+*.log
+testdata

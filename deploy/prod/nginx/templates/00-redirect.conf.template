@@ -1,0 +1,41 @@
+# 80 端口：只做 ACME 挑战与跳转。所有域名共用这一个块。
+server {
+    listen      80 default_server;
+    listen      [::]:80 default_server;
+    server_name _;
+
+    include /etc/nginx/snippets/acme.conf;
+
+    # 容器健康检查用，不跳转
+    location = /healthz {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+# 443 的兜底块：Host 不是我们三个域名的请求直接断开（不回任何内容）。
+# 目的是让扫到源站 IP 的人拿不到站点指纹（docs/09 抗封锁）。
+# default_server 必须有证书才能完成握手，这里用用户端那张。
+#
+# reuseport 只能在同一个 address:port 上出现一次，放在这个最先被 include 的文件里；
+# 其余 server 块写不带 reuseport 的 `listen 443 quic;`。
+server {
+    listen      443 ssl default_server;
+    listen      [::]:443 ssl default_server;
+    listen      443 quic default_server reuseport;
+    listen      [::]:443 quic default_server reuseport;
+    http2       on;
+    http3       on;
+    server_name _;
+
+    ssl_certificate     /etc/nginx/certs/${APPS_DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/nginx/certs/${APPS_DOMAIN}/privkey.pem;
+    include /etc/nginx/snippets/tls.conf;
+
+    return 444;
+}

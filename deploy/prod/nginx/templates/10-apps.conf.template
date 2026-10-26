@@ -1,0 +1,57 @@
+# 用户端前台（apps/，SvelteKit + Bun）。
+#
+# 这个域名下的一切都交给 apps 进程，包括 /api/v1/*：浏览器只访问同源接口，
+# 由 apps 的 BFF 带服务令牌转发给 Go（docs/04 A.3、docs/07 第 0.5 节）。
+# 后台接口 /api/admin 不在这个域名下，apps 自己会对 /api/* 的其他路径回 404。
+#
+# 静态资源刻意**不**换成独立 CDN 域名（SvelteKit 不允许 Service Worker 与 paths.assets 共存），
+# 而是把整个域名挂在 Cloudflare 代理后面，让 /_app/immutable/* 在同源地址上被边缘缓存。
+# 详见 deploy/prod/README.md 第 4 节。
+upstream xsite_apps {
+    server apps:3001;
+    keepalive 32;
+}
+
+server {
+    listen      443 ssl;
+    listen      [::]:443 ssl;
+    listen      443 quic;
+    listen      [::]:443 quic;
+    http2       on;
+    http3       on;
+    server_name ${APPS_DOMAIN};
+
+    ssl_certificate     /etc/nginx/certs/${APPS_DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/nginx/certs/${APPS_DOMAIN}/privkey.pem;
+    include /etc/nginx/snippets/tls.conf;
+
+    # HSTS 由 apps 自己下发（apps/config/security-headers.ts），这里只补 Alt-Svc，
+    # 不重复 HSTS —— 两份同名头会让浏览器按第一份处理，是无谓的歧义。
+    add_header Alt-Svc 'h3=":443"; ma=86400' always;
+
+    limit_req  zone=edge_pages burst=40 nodelay;
+    limit_conn edge_conn 64;
+
+    # 评论、举报这类写请求的正文很小；上传走后台域名，不经这里
+    client_max_body_size 1m;
+
+    location / {
+        proxy_pass http://xsite_apps;
+        include /etc/nginx/snippets/proxy.conf;
+
+        # 边缘身份：apps 只有在这个头对得上时，才采信 Cloudflare 写的 CF-IPCountry
+        # （apps/src/hooks.server.ts）。客户端送来的同名头被这一行覆盖掉。
+        proxy_set_header X-Edge-Secret "${EDGE_SHARED_SECRET}";
+
+        # 压缩**整条交给 apps**，这里刻意不清 Accept-Encoding。原因是 apps 两种内容都处理得比 nginx 好：
+        #   /_app/immutable/*  adapter-bun 直接送构建期压好的 .br（Brotli 11）。
+        #                      清掉 Accept-Encoding 的话它会回明文、nginx 再用 5 档现压，更大也更费 CPU。
+        #   SSR 的 HTML        apps 自己用 node:zlib 流式压（br 优先，5 档，线程池里跑，不阻塞事件循环，
+        #                      见 apps/src/lib/server/compress.ts 与 docs/11 W0-5）。
+        # nginx 的压缩过滤器遇到已带 Content-Encoding 的响应会直接放过，不会重复压。
+        # 这和 feedback 的处理相反：Next.js 只会 gzip 且不认预压缩文件，所以那边必须清掉。
+
+        # SSR 页面随登录用户变化，不在边缘缓存，也不缓冲（首字节更快）
+        proxy_buffering off;
+    }
+}

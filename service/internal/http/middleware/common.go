@@ -1,0 +1,128 @@
+package middleware
+
+import (
+	"errors"
+	"log/slog"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/gin-gonic/gin"
+)
+
+// Recover 捕获 panic，记录堆栈后返回 500（不把细节返回客户端）。
+func Recover() gin.HandlerFunc {
+	return gin.CustomRecovery(func(c *gin.Context, recovered any) {
+		slog.ErrorContext(c.Request.Context(), "panic", "recovered", recovered,
+			"route", c.FullPath(), "request_id", GetRequestID(c))
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
+			"code": "INTERNAL", "message": "服务开小差了，请稍后再试", "request_id": GetRequestID(c),
+		})
+	})
+}
+
+// AccessLog 记录访问日志。按路由模板记录，不记录查询串与请求头，避免泄露令牌。
+func AccessLog(skip map[string]bool) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		c.Next()
+		if skip[c.Request.URL.Path] {
+			return
+		}
+		route := c.FullPath()
+		if route == "" {
+			route = "unmatched"
+		}
+		slog.InfoContext(c.Request.Context(), "http",
+			"method", c.Request.Method,
+			"route", route,
+			"status", c.Writer.Status(),
+			"latency_ms", time.Since(start).Milliseconds(),
+			"request_id", GetRequestID(c),
+		)
+	}
+}
+
+// SecureHeaders 设置通用安全响应头；API 默认不缓存，需要缓存的 handler 自行覆盖 Cache-Control。
+func SecureHeaders(hsts bool) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		h := c.Writer.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Cache-Control", "no-store")
+		if hsts {
+			h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
+		c.Next()
+	}
+}
+
+// BodyLimit 限制请求体大小。后台媒体上传的原始文件流使用独立上限：
+// 不能把默认 1 MiB 限制放宽到所有 API，也必须在认证前拦住无界上传。
+const adminUploadMaxBytes int64 = 4 << 30
+
+// 长请求的连接读写期限。
+const (
+	// uploadDeadline 覆盖「浏览器把文件传完 + 服务端写入对象存储 + 返回响应」整个过程。
+	uploadDeadline = 2 * time.Hour
+	// streamDeadline 略大于 SSE 自己的单连接存活上限（10 分钟），让服务端主动收尾而不是被超时掐断。
+	streamDeadline = 15 * time.Minute
+)
+
+// LongRequest 放宽长请求（后台大文件上传、SSE 进度流）的连接读写期限。
+//
+// http.Server 的 ReadTimeout / WriteTimeout 覆盖的是整个请求：几百 MB 的视频在默认的十几秒里
+// 根本读不完，连接会被服务端直接掐断，经 nginx 表现为 502 Bad Gateway；SSE 同理会在写超时到点时断流。
+// 这里只按路由放宽这两类请求，其余接口保留默认的严格超时（防慢速读写攻击）。
+func LongRequest() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		switch {
+		case isAdminUploadContent(c.Request), isAdminUploadComplete(c.Request):
+			extendDeadline(c, uploadDeadline)
+		case isEventStream(c.Request):
+			extendDeadline(c, streamDeadline)
+		}
+		c.Next()
+	}
+}
+
+// extendDeadline 放宽当前连接的读写期限；底层 ResponseWriter 不支持时（如测试里的 recorder）忽略。
+func extendDeadline(c *gin.Context, d time.Duration) {
+	rc := http.NewResponseController(c.Writer)
+	at := time.Now().Add(d)
+	if err := rc.SetReadDeadline(at); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		slog.WarnContext(c.Request.Context(), "放宽读期限失败", "route", c.FullPath(), "err", err)
+	}
+	if err := rc.SetWriteDeadline(at); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		slog.WarnContext(c.Request.Context(), "放宽写期限失败", "route", c.FullPath(), "err", err)
+	}
+}
+
+// isEventStream 识别 SSE 请求（后台进度流用 ?stream=1 开启，docs/06 第 10 节）。
+func isEventStream(r *http.Request) bool {
+	return r.Method == http.MethodGet && r.URL.Query().Get("stream") == "1"
+}
+
+func BodyLimit(maxBytes int64) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.Body != nil {
+			limit := maxBytes
+			if isAdminUploadContent(c.Request) {
+				limit = adminUploadMaxBytes
+			}
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
+		}
+		c.Next()
+	}
+}
+
+func isAdminUploadContent(r *http.Request) bool {
+	return r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/api/admin/uploads/") && strings.HasSuffix(r.URL.Path, "/content")
+}
+
+// isAdminUploadComplete 识别上传完成请求。它的请求体只有几十字节，但处理时间可能与文件大小成正比
+// （暂存对象缺失时要从主存储把源视频复制一遍），默认的 30 秒写超时会在响应写出前掐断连接。
+func isAdminUploadComplete(r *http.Request) bool {
+	return r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/admin/uploads/") && strings.HasSuffix(r.URL.Path, "/complete")
+}

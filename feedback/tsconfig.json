@@ -1,0 +1,57 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "ES2022"
+    ],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "allowJs": false,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "incremental": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    "paths": {
+      "@/*": [
+        "./src/*"
+      ],
+      "#messages/*": [
+        "./messages/*"
+      ]
+    }
+  },
+  "//include": [
+    ".next/types 是 next build 的产物，里面的 validator.ts 校验每个 page/layout 的导出签名，必须保留。",
+    ".next/dev/types 是 next dev 的产物，内容基本相同，但它生成的 validator.ts 带两个未使用的 import",
+    "（AppRouteHandlerRoutes、NextRequest——本项目没有 route handler），会直接撞上 noUnusedLocals，",
+    "让全新构建的 typecheck 必然失败。两份都 include 等于拿 dev 产物的瑕疵卡住 CI，所以只留 build 那份。",
+    "注意：next dev 可能把这一项写回 tsconfig，如果 typecheck 又报 .next/dev/types 的未使用 import，删掉即可。"
+  ],
+  "include": [
+    "next-env.d.ts",
+    "**/*.ts",
+    "**/*.tsx",
+    ".next/types/**/*.ts",
+    ".next/dev/types/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    ".next/dev"
+  ]
+}

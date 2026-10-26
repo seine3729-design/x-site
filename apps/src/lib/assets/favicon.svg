@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <title>短剧</title>
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f4567c" />
+      <stop offset="0.55" stop-color="#e11d48" />
+      <stop offset="1" stop-color="#9c1433" />
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="16" fill="url(#g)" />
+  <path d="M25 19.4v25.2a2 2 0 0 0 3.06 1.7l20.3-12.6a2 2 0 0 0 0-3.4L28.06 17.7A2 2 0 0 0 25 19.4Z" fill="#fff" />
+</svg>

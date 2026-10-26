@@ -1,0 +1,30 @@
+name: xsite_app
+description: "短剧平台 APP（docs/05）"
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.12.0
+
+dependencies:
+  cryptography: ^2.9.0
+  dio: ^5.11.1
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  flutter_riverpod: ^3.4.3
+  flutter_secure_storage: ^11.2.0
+  go_router: ^18.1.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  mocktail: ^1.0.5
+
+flutter:
+  uses-material-design: true
+  # 界面文案（docs/05 A.6）：与 Web 同一格式的 JSON，后续可由 CDN 下发覆盖
+  assets:
+    - assets/i18n/

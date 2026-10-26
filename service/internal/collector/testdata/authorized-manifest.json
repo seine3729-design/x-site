@@ -1,0 +1,37 @@
+{
+  "source": {
+    "id": "public-domain-demo",
+    "authorization": {
+      "kind": "public_domain",
+      "reference": "仅用于 collectortool validate 的离线结构测试；不是可执行采集来源"
+    },
+    "origins": [
+      {
+        "host": "example.test",
+        "robots_url": "https://example.test/robots.txt"
+      }
+    ]
+  },
+  "dramas": [
+    {
+      "id": "demo-drama-001",
+      "title": "离线授权采集示例",
+      "summary": "此 manifest 只校验授权和数据结构，不会在 validate 模式下联网或写入对象存储。",
+      "cover": {
+        "url": "https://example.test/covers/demo.webp",
+        "mime": "image/webp"
+      },
+      "episodes": [
+        {
+          "id": "demo-episode-001",
+          "number": 1,
+          "title": "第一集",
+          "video": {
+            "url": "https://example.test/videos/demo.mp4",
+            "mime": "video/mp4"
+          }
+        }
+      ]
+    }
+  ]
+}

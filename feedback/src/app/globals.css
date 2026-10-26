@@ -1,0 +1,440 @@
+@import 'tailwindcss';
+
+/*
+ * 反馈社区设计系统（feedback/docs/06 第 2 节）。
+ *
+ * 三层 token：Primitive（原始色阶）→ Semantic（语义角色）→ 组件。
+ * 组件里只允许用语义 token 生成的 utility（bg-surface、text-muted-fg…），
+ * 不允许出现裸十六进制色值，也不要直接用 purple-600 这类原始色阶。
+ *
+ * 风格方向：Minimalism + Swiss grid —— 大面积中性背景、清楚的排版网格、
+ * 有限的强调色、以背景层级与边框分层而不是靠阴影堆叠。
+ */
+
+@theme {
+  /* ---------- Primitive：原始色阶 ----------
+   *
+   * 色彩方向（2026-10-24 重做）：低饱和的紫蓝品牌色 + 带冷色温的中性阶梯。
+   *
+   * 为什么不用高饱和紫（原来的 #7c3aed）：那个饱和度在大面积按钮和徽标上会
+   * 盖住内容，整体观感偏「工具」。Linear / Stripe 这类产品的共同处理是
+   * 把品牌色的饱和度压下来、出现频率降到最低，让层级和留白承担质感。
+   *
+   * 中性色不用纯灰：纯灰在屏幕上显得平而廉价。这里整条阶梯带一点蓝（色相 ~250），
+   * 和品牌色同源，深浅两套主题切换时不会出现「换了一套灰」的割裂感。
+   */
+  --color-brand-50: #f4f4fe;
+  --color-brand-100: #eaeafd;
+  --color-brand-200: #d8d8fb;
+  --color-brand-300: #b9b9f6;
+  --color-brand-400: #9a9af0;
+  --color-brand-500: #7c7ce6;
+  --color-brand-600: #5b5bd6;
+  --color-brand-700: #4a4ac0;
+  --color-brand-800: #3d3d9e;
+  --color-brand-900: #33337d;
+  --color-brand-950: #1f1f4d;
+
+  --color-ink-50: #fbfbfd;
+  --color-ink-100: #f4f4f7;
+  --color-ink-200: #e8e8ee;
+  --color-ink-300: #d4d4de;
+  --color-ink-400: #a3a3b2;
+  /* 500 这一档是算出来的：它要能在白底上做正文（≥4.5:1），#76768a 只有 4.44:1 */
+  --color-ink-500: #6e6e82;
+  --color-ink-600: #55556a;
+  --color-ink-700: #3e3e50;
+  --color-ink-800: #2a2a38;
+  --color-ink-900: #1a1a24;
+  --color-ink-950: #0c0c12;
+
+  --color-grass-50: #f0fdf4;
+  --color-grass-300: #86efac;
+  --color-grass-600: #16a34a;
+  --color-grass-700: #15803d;
+  --color-grass-900: #14532d;
+
+  --color-flame-50: #fef3f2;
+  --color-flame-300: #fca5a5;
+  --color-flame-600: #e5484d;
+  --color-flame-700: #c62a2f;
+  --color-flame-900: #7f1d1d;
+
+  --color-honey-50: #fdf6e8;
+  --color-honey-300: #fcd34d;
+  --color-honey-600: #d97706;
+  --color-honey-700: #ab5d00;
+  --color-honey-900: #78350f;
+
+  --color-sky-50: #eef4ff;
+  --color-sky-300: #93c5fd;
+  --color-sky-600: #3b63d4;
+  --color-sky-700: #2f4fb5;
+  --color-sky-900: #1e3a8a;
+
+  /* ---------- 字体 ----------
+   * 中文优先系统字体栈：不下载字体，首屏不被字体阻塞，也不会出现中文字形缺失。
+   * 数字列、编号、倒计时统一走 tabular figures，避免宽度跳动。 */
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+
+  /* ---------- 字号与行高 ----------
+   * 正文行高 1.6，标题 1.2–1.35（docs/06 第 2.4 节）。 */
+  --text-2xs: 0.75rem;
+  --text-2xs--line-height: 1.5;
+  --text-xs: 0.8125rem;
+  --text-xs--line-height: 1.5;
+  --text-sm: 0.875rem;
+  --text-sm--line-height: 1.6;
+  --text-base: 1rem;
+  --text-base--line-height: 1.6;
+  --text-lg: 1.125rem;
+  --text-lg--line-height: 1.55;
+  --text-xl: 1.25rem;
+  --text-xl--line-height: 1.4;
+  --text-2xl: 1.5rem;
+  --text-2xl--line-height: 1.35;
+  --text-2xl--letter-spacing: -0.01em;
+  --text-3xl: 2rem;
+  --text-3xl--line-height: 1.25;
+  --text-3xl--letter-spacing: -0.015em;
+  --text-4xl: 2.5rem;
+  --text-4xl--line-height: 1.15;
+  --text-4xl--letter-spacing: -0.02em;
+  --text-5xl: 3rem;
+  --text-5xl--line-height: 1.1;
+  --text-5xl--letter-spacing: -0.02em;
+
+  /* ---------- 间距：4px 基准 ---------- */
+  --spacing: 0.25rem;
+
+  /* ---------- 圆角：输入/按钮 8px、卡片 12px、标签 999px ---------- */
+  --radius-control: 0.5rem;
+  --radius-surface: 0.75rem;
+  --radius-surface-lg: 1rem;
+  --radius-pill: 999px;
+
+  /* ---------- 阴影：默认几乎不用，只给浮层 ---------- */
+  --shadow-raised: 0 1px 2px 0 rgb(2 6 23 / 0.04);
+  --shadow-overlay:
+    0 10px 15px -3px rgb(2 6 23 / 0.08), 0 4px 6px -4px rgb(2 6 23 / 0.06);
+  --shadow-popover:
+    0 20px 25px -5px rgb(2 6 23 / 0.1), 0 8px 10px -6px rgb(2 6 23 / 0.06);
+
+  /* ---------- 布局：内容最大宽度（docs/06 第 3.1 节） ---------- */
+  --container-shell: 75rem; /* 1200px：页面壳 */
+  --container-prose: 46rem; /* 736px：正文主栏，中文约 32–42 字/行 */
+
+  /* ---------- 动效：低强度、可中断（docs/06 第 8 节） ---------- */
+  --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
+  --duration-tap: 120ms;
+  --duration-hover: 180ms;
+  --duration-overlay: 220ms;
+}
+
+/*
+ * ---------- Semantic：语义角色 ----------
+ *
+ * 深色不是反色：背景分层、边框、状态色分别给值并各自验证对比度
+ * （scripts/check-contrast.mjs 会跑一遍，低于 WCAG 2.2 AA 会失败）。
+ *
+ * 成对设计的用意：`*-surface` 是用作背景的那一档，`*-fg` 是写在中性背景上的那一档。
+ * 绿色和橙色在白底上做正文都不够 4.5:1，所以必须分开，不能一个色值两用。
+ */
+:root {
+  color-scheme: light;
+
+  /* 背景分四档。raised 不是「浮层」，它是 hover 底色、徽标底、内嵌信息块那一档；
+   * 浮层单独用 overlay —— 浅色下浮层只能是纯白靠阴影区分，深色下必须比卡片更亮，
+   * 两种主题里「浮层」和「hover 底」的走向正好相反，所以不能共用一个 token。 */
+  --canvas: var(--color-ink-50);
+  --surface: #ffffff;
+  --surface-raised: var(--color-ink-100);
+  --surface-sunken: var(--color-ink-200);
+  --surface-overlay: #ffffff;
+
+  /* 正文用 900 而不是 950：纯黑一样的字在白底上发虚、读久了累 */
+  --fg: var(--color-ink-900);
+  --fg-muted: var(--color-ink-600);
+  --fg-subtle: var(--color-ink-500);
+  --fg-on-fill: #ffffff;
+
+  /* border 是装饰性分隔线；control-border 用于输入框、复选框这类控件边界，
+   * 必须对背景 ≥3:1（WCAG 1.4.11），所以比分隔线明显深一档。 */
+  --border: var(--color-ink-200);
+  --border-strong: var(--color-ink-300);
+  /* 这个值是算出来的，不是挑出来的：要同时对 #ffffff 与 canvas 两种背景都 ≥3:1 */
+  --control-border: #8b8ba3;
+  --control-border-hover: var(--color-ink-500);
+
+  --primary: var(--color-brand-600);
+  --primary-hover: var(--color-brand-700);
+  --primary-fg: var(--color-brand-700);
+  --primary-surface: var(--color-brand-50);
+  --primary-border: var(--color-brand-200);
+
+  /* 强调色作填充时配白字只有 3.3:1，所以填充档直接用 grass-700，不用 grass-600 */
+  --accent: var(--color-grass-700);
+  --accent-hover: var(--color-grass-900);
+  --accent-fg: var(--color-grass-700);
+  --accent-surface: var(--color-grass-50);
+
+  --success: var(--color-grass-600);
+  --success-fg: var(--color-grass-700);
+  --success-surface: var(--color-grass-50);
+
+  --warning: var(--color-honey-600);
+  --warning-fg: var(--color-honey-700);
+  --warning-surface: var(--color-honey-50);
+
+  /* 和强调色同样的原因：flame-600 配白字只有 3.91:1，填充档必须用 700 */
+  --danger: var(--color-flame-700);
+  --danger-hover: var(--color-flame-900);
+  --danger-fg: var(--color-flame-700);
+  --danger-surface: var(--color-flame-50);
+
+  --info: var(--color-sky-600);
+  --info-fg: var(--color-sky-700);
+  --info-surface: var(--color-sky-50);
+
+  --ring: var(--color-brand-600);
+  --scrim: rgb(2 6 23 / 0.5);
+}
+
+.dark {
+  color-scheme: dark;
+
+  /* 近黑但带一点蓝（和中性阶梯同源），比纯黑柔和。深色下阴影几乎不可见，
+   * 层级只能靠底色：canvas < surface < raised < overlay，浮层永远最亮。 */
+  --canvas: var(--color-ink-950);
+  --surface: #16161d;
+  --surface-raised: #1e1e27;
+  --surface-sunken: #08080c;
+  --surface-overlay: #22222c;
+
+  --fg: var(--color-ink-100);
+  --fg-muted: #a0a0b4;
+  --fg-subtle: #8d8da6;
+  --fg-on-fill: var(--color-ink-950);
+
+  --border: #26262f;
+  --border-strong: #35353f;
+  /* 同样是算出来的：要对 canvas/surface/raised/overlay 四档背景都 ≥3:1。
+   * 浮层（overlay，最亮的那档）是这里的约束条件，深色下很容易做太暗。 */
+  --control-border: #6c6c87;
+  --control-border-hover: #8d8da6;
+
+  /* 深色下品牌色要提亮才能达到正文对比度；填充按钮的文字换成深色 */
+  --primary: var(--color-brand-400);
+  --primary-hover: var(--color-brand-300);
+  --primary-fg: var(--color-brand-300);
+  --primary-surface: #1d1b3a;
+  --primary-border: #332e63;
+
+  --accent: var(--color-grass-300);
+  --accent-hover: #bbf7d0;
+  --accent-fg: var(--color-grass-300);
+  --accent-surface: #0e2a19;
+
+  --success: var(--color-grass-300);
+  --success-fg: var(--color-grass-300);
+  --success-surface: #0e2a19;
+
+  --warning: var(--color-honey-300);
+  --warning-fg: var(--color-honey-300);
+  --warning-surface: #2e2109;
+
+  --danger: #f87171;
+  --danger-hover: var(--color-flame-300);
+  --danger-fg: #fca5a5;
+  --danger-surface: #2e1316;
+
+  --info: var(--color-sky-300);
+  --info-fg: var(--color-sky-300);
+  --info-surface: #10203c;
+
+  --ring: var(--color-brand-400);
+  --scrim: rgb(8 8 12 / 0.72);
+}
+
+/* 把语义 token 暴露成 Tailwind utility：bg-surface / text-fg-muted / border-border … */
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-surface-sunken: var(--surface-sunken);
+  --color-surface-overlay: var(--surface-overlay);
+
+  --color-fg: var(--fg);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-subtle: var(--fg-subtle);
+  --color-fg-on-fill: var(--fg-on-fill);
+
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-control-border: var(--control-border);
+  --color-control-border-hover: var(--control-border-hover);
+
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-fg: var(--primary-fg);
+  --color-primary-surface: var(--primary-surface);
+  --color-primary-border: var(--primary-border);
+
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-surface: var(--accent-surface);
+
+  --color-success: var(--success);
+  --color-success-fg: var(--success-fg);
+  --color-success-surface: var(--success-surface);
+
+  --color-warning: var(--warning);
+  --color-warning-fg: var(--warning-fg);
+  --color-warning-surface: var(--warning-surface);
+
+  --color-danger: var(--danger);
+  --color-danger-hover: var(--danger-hover);
+  --color-danger-fg: var(--danger-fg);
+  --color-danger-surface: var(--danger-surface);
+
+  --color-info: var(--info);
+  --color-info-fg: var(--info-fg);
+  --color-info-surface: var(--info-surface);
+
+  --color-ring: var(--ring);
+  --color-scrim: var(--scrim);
+}
+
+@layer base {
+  *,
+  *::before,
+  *::after {
+    border-color: var(--border);
+  }
+
+  html {
+    /* 锚点跳转时让标题不被吸顶栏盖住 */
+    scroll-padding-top: calc(var(--spacing) * 20);
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    background-color: var(--canvas);
+    color: var(--fg);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* 标题默认紧一些，正文保持 1.6 */
+  h1,
+  h2,
+  h3,
+  h4 {
+    text-wrap: balance;
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+
+  /* 统一焦点环：键盘可见、鼠标点击不出现。焦点环不能被吸顶栏遮住（docs/06 第 7 节） */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+    border-radius: var(--radius-control);
+  }
+
+  /* 编号、票数、时间这类数字列固定宽度，避免刷新时抖动 */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* URL、反馈编号、用户贴的长串允许在任意位置折行，但不影响正常中英文段落 */
+  .break-token {
+    overflow-wrap: anywhere;
+  }
+
+  /* 用户正文：保留换行，长词可断 */
+  .user-text {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  /*
+   * 主题分段控件的选中态。
+   *
+   * 为什么写成 CSS 而不是在组件里按 state 加 class：
+   * 用户选的模式由 ThemeScript 在首帧之前写进 html[data-theme]，
+   * 纯 CSS 驱动高亮就能在首帧显示正确的那一段；靠 React state 的话
+   * 服务端渲染只能假设「跟随系统」，hydration 后高亮会跳一下。
+   * （aria-checked 仍然由组件设置，CSS 管不了无障碍状态。）
+   */
+  html[data-theme='system'] .theme-seg[data-mode='system'],
+  html[data-theme='light'] .theme-seg[data-mode='light'],
+  html[data-theme='dark'] .theme-seg[data-mode='dark'] {
+    /* 用 overlay 而不是 surface：轨道是 surface-sunken，深色下它和 surface
+     * 只差一档，选中态会看不出来；overlay 两套主题下都比轨道明显亮一截。 */
+    background-color: var(--surface-overlay);
+    color: var(--fg);
+    box-shadow: var(--shadow-raised);
+  }
+}
+
+/*
+ * 浮层的进出场。只动 opacity 与 transform，退出时长约为进入的 2/3
+ * （docs/06 第 8 节）。没有引入动画插件，两个 keyframes 够用。
+ */
+@keyframes fb-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes fb-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes fb-slide-up-in {
+  from {
+    transform: translateY(100%);
+  }
+}
+@keyframes fb-slide-up-out {
+  to {
+    transform: translateY(100%);
+  }
+}
+@keyframes fb-pop-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.97);
+  }
+}
+/* 贴着触发器出现的浮层（下拉、菜单）。不能复用 fb-pop-in：
+ * 那个带居中用的 translate(-50%, -50%)，而这类浮层的位置是 Radix 算出来的。 */
+@keyframes fb-scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
+/* 减少动态偏好下直接给最终状态，不做任何过渡（docs/06 第 8 节） */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

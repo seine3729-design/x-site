@@ -1,0 +1,380 @@
+@import 'tailwindcss';
+
+/*
+ * 设计令牌（docs/04 C.8、W0-6）。
+ *
+ * 真实色板由后台「白标 → 配色」决定：SSR 时 hooks.server.ts 把两套配色写进 <html style>
+ * （深色 --d-*、浅色 --l-*，推导见 src/lib/theme/tokens.ts），首帧就是最终颜色，不闪。
+ * 这里每个令牌都写成 var(--d-x, 内置值)：后端不可用时自动落到内置的经典红色板（与预设 classic 等值）。
+ *
+ * 深色为默认主题（短剧站点的沉浸观感），浅色由 <html class="light"> 切换；class 由 SSR 按后台的
+ * 默认深浅色给出，再由 app.html 的内联脚本在首帧前按本机偏好校正，SSR 输出与 Cookie 无关、可进边缘缓存。
+ * 组件只用语义令牌（bg-surface、text-fg-muted…），不写 dark: 变体。
+ */
+@custom-variant light (&:where(.light, .light *));
+
+@theme inline {
+	/* 字体：后台选衬线/圆体时注入 --app-font-prefix（以逗号结尾）插在本地字体栈前面；
+	   本地字体栈按 <html lang> 选，中日韩共用汉字时各自用本地字形 */
+	--font-sans: var(--app-font-prefix, ) var(--app-font-sans);
+	--font-mono: ui-monospace, 'SFMono-Regular', Menlo, monospace;
+
+	--color-canvas: var(--canvas);
+	--color-surface: var(--surface);
+	--color-raised: var(--raised);
+	--color-overlay: var(--overlay);
+	--color-sunken: var(--sunken);
+	--color-fg: var(--fg);
+	--color-fg-muted: var(--fg-muted);
+	--color-fg-subtle: var(--fg-subtle);
+	--color-line: var(--line);
+	--color-line-strong: var(--line-strong);
+	--color-brand: var(--brand);
+	--color-brand-strong: var(--brand-strong);
+	--color-brand-fg: var(--brand-fg);
+	--color-brand-soft: var(--brand-soft);
+	--color-on-brand: var(--on-brand);
+	--color-vip: var(--vip);
+	--color-vip-fg: var(--vip-fg);
+	--color-on-vip: var(--on-vip);
+	--color-ok: var(--ok);
+	--color-warn: var(--warn);
+	--color-danger: var(--danger);
+
+	/* 卡片圆角与封面比例由后台配（radius、cover_ratio）：rounded-card、rounded-panel、aspect-cover。
+	   后台只配一个值，这里推导出两档：卡片 / 海报用原值，区块面板与弹窗按 1.8 倍放大（配 0 时一起变直角）。
+	   组件里不要再写死 rounded-2xl / rounded-3xl，否则后台改圆角前台看不出变化。 */
+	--radius-card: var(--card-radius, 12px);
+	--radius-panel: calc(var(--card-radius, 12px) * 1.8);
+	--aspect-cover: var(--cover-ratio, 2 / 3);
+
+	--shadow-pop: 0 12px 32px -8px rgb(0 0 0 / 0.45), 0 2px 6px rgb(0 0 0 / 0.25);
+	--ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
+	--animate-shimmer: shimmer 1.6s linear infinite;
+	--animate-fade-in: fade-in 0.24s var(--ease-out-soft) both;
+	--animate-rise: rise 0.28s var(--ease-out-soft) both;
+
+	@keyframes shimmer {
+		from {
+			background-position: 200% 0;
+		}
+		to {
+			background-position: -200% 0;
+		}
+	}
+	@keyframes fade-in {
+		from {
+			opacity: 0;
+		}
+	}
+	@keyframes rise {
+		from {
+			opacity: 0;
+			transform: translateY(12px);
+		}
+	}
+}
+
+:root {
+	color-scheme: dark;
+	--app-font-sans: 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', ui-sans-serif, system-ui, sans-serif;
+
+	/* 深色：四档背景依次变亮，浮层比卡片更亮才分得出层次 */
+	--canvas: var(--d-canvas, #0b0b0f);
+	--surface: var(--d-surface, #17171f);
+	--raised: var(--d-raised, #21212c);
+	--overlay: var(--d-overlay, #262633);
+	--sunken: var(--d-sunken, #1c1c25);
+	--fg: var(--d-fg, #f5f5f7);
+	--fg-muted: var(--d-fg-muted, #9ca3af);
+	--fg-subtle: var(--d-fg-subtle, #727c8d);
+	--line: var(--d-line, rgb(245 245 247 / 0.08));
+	--line-strong: var(--d-line-strong, rgb(245 245 247 / 0.16));
+	/* 品牌红：作填充配白字（on-brand）；作文字用对比度更高的 brand-fg */
+	--brand: var(--d-brand, #e11d48);
+	--brand-strong: var(--d-brand-strong, #bd183c);
+	--brand-fg: var(--d-brand-fg, #e7496b);
+	--brand-soft: var(--d-brand-soft, rgb(225 29 72 / 0.16));
+	--on-brand: var(--d-on-brand, #ffffff);
+	--vip: var(--d-vip, #f59e0b);
+	--vip-fg: var(--d-vip-fg, #f59e0b);
+	--on-vip: var(--d-on-vip, #111118);
+
+	/* 状态色不由后台配：成功、警告、危险的含义不该随皮肤变 */
+	--ok: #34d399;
+	--warn: #fbbf24;
+	--danger: #f87171;
+
+	--header-h: 3.5rem;
+	--tabbar-h: 3.5rem;
+	--safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+:root.light {
+	color-scheme: light;
+	--canvas: var(--l-canvas, #f6f6f8);
+	--surface: var(--l-surface, #ffffff);
+	--raised: var(--l-raised, #f1f1f1);
+	--overlay: var(--l-overlay, #ffffff);
+	--sunken: var(--l-sunken, #e8e8e8);
+	--fg: var(--l-fg, #18181b);
+	--fg-muted: var(--l-fg-muted, #6b7280);
+	--fg-subtle: var(--l-fg-subtle, #888e9b);
+	--line: var(--l-line, rgb(24 24 27 / 0.09));
+	--line-strong: var(--l-line-strong, rgb(24 24 27 / 0.18));
+	--brand: var(--l-brand, #e11d48);
+	--brand-strong: var(--l-brand-strong, #bd183c);
+	--brand-fg: var(--l-brand-fg, #e11d48);
+	--brand-soft: var(--l-brand-soft, rgb(225 29 72 / 0.1));
+	--on-brand: var(--l-on-brand, #ffffff);
+	--vip: var(--l-vip, #f59e0b);
+	--vip-fg: var(--l-vip-fg, #9c6808);
+	--on-vip: var(--l-on-vip, #111118);
+
+	--ok: #047857;
+	--warn: #b45309;
+	--danger: #c81e1e;
+}
+
+@media (min-width: 1024px) {
+	:root {
+		--header-h: 4rem;
+		/* 电脑端没有底栏；手机底栏被后台关掉时由注入的 --tabbar-h: 0rem 覆盖 */
+		--tabbar-h: 0rem;
+	}
+}
+
+:root:lang(en),
+:root:lang(es),
+:root:lang(vi) {
+	--app-font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+:root:lang(ja) {
+	--app-font-sans: 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Noto Sans JP', 'Yu Gothic', system-ui, sans-serif;
+}
+:root:lang(ko) {
+	--app-font-sans: 'Apple SD Gothic Neo', 'Noto Sans KR', 'Malgun Gothic', system-ui, sans-serif;
+}
+:root:lang(th) {
+	--app-font-sans: 'Noto Sans Thai', Thonburi, Tahoma, system-ui, sans-serif;
+}
+:root:lang(hi) {
+	--app-font-sans: 'Noto Sans Devanagari', 'Kohinoor Devanagari', Mangal, system-ui, sans-serif;
+}
+:root:lang(ar) {
+	--app-font-sans: 'Noto Sans Arabic', 'Geeza Pro', Tahoma, system-ui, sans-serif;
+}
+
+@layer base {
+	* {
+		border-color: var(--line);
+	}
+
+	html {
+		-webkit-text-size-adjust: 100%;
+		-webkit-tap-highlight-color: transparent;
+		scrollbar-color: var(--line-strong) transparent;
+	}
+
+	body {
+		@apply min-h-dvh bg-canvas font-sans text-fg antialiased;
+	}
+
+	:focus-visible {
+		outline: 2px solid var(--brand-fg);
+		outline-offset: 2px;
+	}
+
+	button,
+	[role='button'],
+	summary,
+	a[href] {
+		cursor: pointer;
+		touch-action: manipulation;
+	}
+
+	::selection {
+		background: var(--brand-soft);
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		*,
+		*::before,
+		*::after {
+			animation-duration: 0.01ms !important;
+			animation-iteration-count: 1 !important;
+			transition-duration: 0.01ms !important;
+			scroll-behavior: auto !important;
+		}
+	}
+}
+
+@layer components {
+	/* 页面主体宽度：手机 16px 边距，平板 24px，桌面 32px，最宽 1440px */
+	.page-x {
+		@apply mx-auto w-full max-w-360 px-4 md:px-6 xl:px-8;
+	}
+
+	.btn {
+		@apply inline-flex h-11 select-none items-center justify-center gap-2 rounded-full px-5 text-[15px] font-semibold whitespace-nowrap transition-[background-color,color,transform,box-shadow] duration-150 active:scale-[0.97] disabled:pointer-events-none disabled:opacity-45;
+	}
+	.btn-sm {
+		@apply h-9 px-4 text-sm;
+	}
+	.btn-lg {
+		@apply h-12 px-7 text-base;
+	}
+	/* 下面几处 color-mix 都先写一条不含它的回退：Safari 16.1 及更早不认 color-mix，
+	   整条声明会被丢掉——阴影没了只是淡一点，但渐变没了按钮会变透明（docs/04 A.6）。 */
+	.btn-primary {
+		@apply bg-brand text-on-brand hover:bg-brand-strong;
+		box-shadow: 0 8px 24px -8px rgb(0 0 0 / 0.35);
+		box-shadow: 0 8px 24px -8px color-mix(in oklab, var(--brand) 60%, transparent);
+	}
+	/* 会员按钮：强调色往亮处调一档做渐变，配色换了也跟着换 */
+	.btn-vip {
+		@apply text-on-vip hover:brightness-105;
+		background-image: linear-gradient(to right, var(--vip), var(--vip));
+		background-image: linear-gradient(to right, color-mix(in oklab, var(--vip), #ffffff 32%), var(--vip));
+	}
+	.btn-ghost {
+		@apply bg-raised text-fg hover:bg-overlay;
+	}
+	/* 内置站点标识（后台没传 Logo 时）：品牌色渐变方块，配色换了跟着换 */
+	.brand-mark {
+		background-image: linear-gradient(to bottom right, var(--brand), var(--brand-strong));
+		background-image: linear-gradient(
+			to bottom right,
+			color-mix(in oklab, var(--brand), #ffffff 26%),
+			var(--brand) 55%,
+			color-mix(in oklab, var(--brand), #000000 32%)
+		);
+		box-shadow: 0 6px 18px -6px rgb(0 0 0 / 0.4);
+		box-shadow: 0 6px 18px -6px color-mix(in oklab, var(--brand) 80%, transparent);
+	}
+	/* 叠在海报、视频上的半透明按钮，两套主题都保持深色玻璃质感 */
+	.btn-glass {
+		@apply bg-white/14 text-white backdrop-blur-md hover:bg-white/22;
+	}
+	/* 压在剧照大图上的主按钮：白底深字，比品牌色填充在任何剧照上都更跳（首页轮播） */
+	.btn-light {
+		@apply bg-white text-[#17171c] hover:bg-white/90;
+		box-shadow: 0 10px 30px -12px rgb(0 0 0 / 0.6);
+	}
+	.icon-btn {
+		@apply inline-flex size-10 shrink-0 items-center justify-center rounded-full text-fg-muted transition-colors duration-150 hover:bg-raised hover:text-fg active:scale-95;
+	}
+
+	.chip {
+		@apply inline-flex h-8 items-center gap-1 rounded-full bg-raised px-3.5 text-[13px] font-medium whitespace-nowrap text-fg-muted transition-colors duration-150 hover:text-fg;
+	}
+	.chip[aria-pressed='true'],
+	.chip[aria-current='page'],
+	.chip[aria-selected='true'] {
+		@apply bg-brand-soft text-brand-fg;
+	}
+
+	/* 表单输入框：16px 字号（iOS 不会自动放大），高度 48px（触控目标） */
+	.field {
+		@apply h-12 w-full rounded-xl border border-line bg-raised/60 px-4 text-base text-fg transition-colors placeholder:text-fg-subtle focus:border-brand-fg/70 focus:bg-raised focus:outline-none aria-invalid:border-danger;
+	}
+	textarea.field {
+		@apply h-auto min-h-24 py-3 leading-6;
+	}
+
+	.section-title {
+		@apply text-lg font-bold tracking-tight md:text-xl;
+	}
+
+	.skeleton {
+		background: linear-gradient(90deg, var(--sunken) 25%, var(--raised) 37%, var(--sunken) 63%);
+		background-size: 400% 100%;
+		@apply animate-shimmer rounded-lg;
+	}
+
+	.no-scrollbar {
+		scrollbar-width: none;
+		/* 横滑到头时不要把手势交给浏览器：iOS Safari 会把它当「侧滑返回」，
+		   手机上滑剧集横栏滑到最后一张常常直接退出当前页 */
+		overscroll-behavior-x: contain;
+		-webkit-overflow-scrolling: touch;
+	}
+	.no-scrollbar::-webkit-scrollbar {
+		display: none;
+	}
+
+
+	/* 海报底部的渐变遮罩，保证白色角标在任何封面上都可读 */
+	.poster-scrim {
+		background: linear-gradient(to top, rgb(0 0 0 / 0.78), rgb(0 0 0 / 0.25) 45%, transparent 70%);
+	}
+
+	/* 剧集角标（预设表在 lib/drama/badge.ts，渲染在 lib/drama/Badge.svelte）。
+	   语义色固定：热播=火、新剧=青、爆款=紫、预告=蓝、限免=绿、完结=玻璃；
+	   只有「独家」跟后台配的品牌色、「会员」跟会员色走，换配色时这两个会一起变。 */
+	.badge {
+		@apply inline-flex w-fit max-w-full items-center overflow-hidden font-bold whitespace-nowrap text-white;
+		/* 顶部一道内高光 + 向下的投影：10px 这么小也看得出是一枚贴在封面上的标签，而不是一块纯色 */
+		box-shadow:
+			inset 0 1px 0 rgb(255 255 255 / 0.3),
+			0 2px 6px -1px rgb(0 0 0 / 0.45);
+		text-shadow: 0 1px 2px rgb(0 0 0 / 0.28);
+	}
+	.badge-sm {
+		@apply gap-0.5 rounded-md px-1.5 py-px text-[10px] leading-4;
+	}
+	.badge-md {
+		@apply gap-0.5 rounded-md px-2 py-0.5 text-[11px] leading-4;
+	}
+	.badge-lg {
+		@apply gap-1 rounded-lg px-2.5 py-1 text-xs lg:text-[13px];
+	}
+	/* 贴着海报左上角的形态：外角跟卡片圆角一致，内角小圆角 */
+	.badge-corner {
+		@apply rounded-none rounded-ss-card rounded-ee-lg;
+	}
+	.badge-hot {
+		background-image: linear-gradient(135deg, #ff8f3d, #ef2d56 72%);
+	}
+	.badge-new {
+		background-image: linear-gradient(135deg, #37dfc6, #0b86c4 76%);
+	}
+	.badge-trending {
+		background-image: linear-gradient(135deg, #ff79c6, #9d20b4 76%);
+	}
+	.badge-preview {
+		background-image: linear-gradient(135deg, #8b9cff, #3f36c9 76%);
+	}
+	.badge-free {
+		background-image: linear-gradient(135deg, #58e08a, #0f7d3c 76%);
+	}
+	.badge-finished {
+		@apply bg-black/55 backdrop-blur-sm;
+		box-shadow:
+			inset 0 0 0 1px rgb(255 255 255 / 0.24),
+			0 2px 6px -1px rgb(0 0 0 / 0.4);
+	}
+	.badge-exclusive {
+		@apply text-on-brand;
+		background-image: linear-gradient(135deg, var(--brand), var(--brand-strong));
+		background-image: linear-gradient(135deg, color-mix(in oklab, var(--brand), #ffffff 26%), var(--brand-strong));
+	}
+	.badge-vip {
+		@apply text-on-vip;
+		background-image: linear-gradient(135deg, var(--vip), var(--vip));
+		background-image: linear-gradient(135deg, color-mix(in oklab, var(--vip), #ffffff 34%), var(--vip));
+		text-shadow: none;
+	}
+	/* 自定义文案：没有语义，用品牌色填充 */
+	.badge-custom {
+		@apply bg-brand text-on-brand;
+		text-shadow: none;
+	}
+
+	.text-balance {
+		text-wrap: balance;
+	}
+	.tabular {
+		font-variant-numeric: tabular-nums;
+	}
+}

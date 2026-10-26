@@ -1,0 +1,10 @@
+# 构建上下文排除项。本地的密钥文件（.env.local / .env.*.local）绝不进镜像：
+# 构建期需要的 CDN 前缀等值由 Dockerfile 的 ARG 写成 .env.production.local。
+node_modules
+.svelte-kit
+build
+.env
+.env.local
+.env.*.local
+.DS_Store
+*.log

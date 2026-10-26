@@ -1,0 +1,22 @@
+# 依赖与构建产物。
+#
+# 这个文件之前不存在：`git add -A` 会把 admin/node_modules（约 380 MB）与 dist 一起提交。
+# 新增任何会产生大目录的工具时，先在这里补一行。
+node_modules/
+dist/
+.tanstack/
+
+# TypeScript 增量编译缓存（tsc -b 生成）
+*.tsbuildinfo
+
+# 构建后由 scripts/precompress.mjs 生成的预压缩产物。
+# dist/ 已经整体忽略，这两行是防止将来往别处输出时漏掉。
+**/*.br
+**/*.gz
+
+# 本地环境变量（后台构建期只用 ADMIN_ASSET_BASE，由 CI 注入；本地不需要这个文件）
+.env
+.env.*
+
+.DS_Store
+*.log

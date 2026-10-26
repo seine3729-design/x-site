@@ -1,0 +1,19 @@
+# www 等别名跳主域（同一份内容两个地址会分散 SEO 权重）。
+# 证书和主域是同一张（certbot 一次把主域和别名签进一个证书），所以这里用主域的证书路径。
+#
+# APPS_ALIASES 为空时 entrypoint.sh 不渲染这个文件 —— `server_name ;` 是语法错误。
+server {
+    listen      443 ssl;
+    listen      [::]:443 ssl;
+    listen      443 quic;
+    listen      [::]:443 quic;
+    http2       on;
+    http3       on;
+    server_name ${APPS_ALIASES};
+
+    ssl_certificate     /etc/nginx/certs/${APPS_DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/nginx/certs/${APPS_DOMAIN}/privkey.pem;
+    include /etc/nginx/snippets/tls.conf;
+
+    return 301 https://${APPS_DOMAIN}$request_uri;
+}

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="%lang%" dir="%dir%" %xsite.root%>
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+		<meta name="text-scale" content="scale" />
+		<meta name="color-scheme" content="dark light" />
+		<meta name="theme-color" content="#0b0b0f" />
+		<meta name="format-detection" content="telephone=no" />
+		<!--
+			首帧前定深浅色，避免闪烁。默认值 data-scheme 由 SSR 按后台「白标 → 配色」给出；
+			data-scheme-lock 表示后台关掉了切换，这时忽略本机偏好。地址栏颜色从注入的
+			--d-canvas / --l-canvas 取（行内 style 属性上的自定义属性在样式表加载前就能读到）。
+			SSR 输出不依赖 Cookie，页面可进边缘缓存。
+		-->
+		<script>
+			(function () {
+				try {
+					var d = document.documentElement;
+					var stored = d.hasAttribute('data-scheme-lock') ? null : localStorage.getItem('xs_theme');
+					var p = stored === 'dark' || stored === 'light' || stored === 'system' ? stored : d.getAttribute('data-scheme') || 'dark';
+					var light = p === 'light' || (p === 'system' && matchMedia('(prefers-color-scheme: light)').matches);
+					d.setAttribute('data-theme', p);
+					d.classList.toggle('light', light);
+					var age = Number(localStorage.getItem('xs_age_ok'));
+					if (age > Date.now()) d.setAttribute('data-age-ok', '');
+					var color = getComputedStyle(d).getPropertyValue(light ? '--l-canvas' : '--d-canvas').trim();
+					document.querySelector('meta[name="theme-color"]').setAttribute('content', color || (light ? '#f6f6f8' : '#0b0b0f'));
+				} catch (e) {}
+			})();
+		</script>
+		%sveltekit.head%
+	</head>
+	<body data-sveltekit-preload-data="hover">
+		<div style="display: contents">%sveltekit.body%</div>
+	</body>
+</html>

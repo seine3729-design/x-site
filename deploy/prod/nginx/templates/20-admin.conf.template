@@ -1,0 +1,100 @@
+# 运营后台（admin/，React + Vite 纯静态 SPA）。
+#
+# 关键约束：页面和 /api/admin 必须同源。后台会话是 HttpOnly Cookie，后端还要校验
+# Origin 白名单与 CSRF（docs/03 第 2.3 节），所以不能把 index.html 搬到 CDN 裸域，
+# 只有带内容哈希的 assets/ 走 CDN。
+#
+# 静态文件由这一层**直接从磁盘发**，不再反代到后台容器里的 nginx：
+# 少一跳，而且这个 nginx 带 ngx_brotli，能把构建期压好的 .br（Brotli 11）原样送出去。
+# /srv/admin 是 compose 的 admin_static 卷，由一次性服务 admin-assets 从镜像里导出
+# （见 admin/export-assets.sh）。
+#
+# 这个域名与用户端域名、证书、入口完全分离（docs/00 第 2 节）。
+upstream xsite_service {
+    server service:8080;
+    keepalive 32;
+}
+
+server {
+    listen      443 ssl;
+    listen      [::]:443 ssl;
+    listen      443 quic;
+    listen      [::]:443 quic;
+    http2       on;
+    http3       on;
+    server_name ${ADMIN_DOMAIN};
+
+    ssl_certificate     /etc/nginx/certs/${ADMIN_DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/nginx/certs/${ADMIN_DOMAIN}/privkey.pem;
+    include /etc/nginx/snippets/tls.conf;
+    include /etc/nginx/snippets/https-headers.conf;
+
+    # 后台不该出现在搜索结果里
+    add_header X-Robots-Tag "noindex, nofollow, noarchive" always;
+
+    root /srv/admin/current;
+    index index.html;
+
+    limit_req  zone=edge_admin burst=60 nodelay;
+
+    # 后台要上传视频与批量导入 CSV，这里给的额度最大。
+    # 必须与 Go 侧的上传上限一致（middleware.adminUploadMaxBytes = 4 GiB，docs/03 第 9.6a 节）：
+    # 这里给小了，2–4 GiB 的视频会在边缘层就被 413 挡下，运营看到的是「上传失败」而不是容量提示。
+    client_max_body_size 4g;
+
+    # 想再叠一层网络面的收口（docs/00 第 2 节提到的 IP 白名单）时，把下面两行放开并填办公出口：
+    # allow 203.0.113.0/24;
+    # deny  all;
+
+    location /api/admin/ {
+        proxy_pass http://xsite_service;
+        include /etc/nginx/snippets/proxy.conf;
+
+        # 回源鉴权：直连源站（没有这个头）会被 Go 侧 403（docs/11 S5-2）
+        proxy_set_header X-Edge-Secret "${EDGE_SHARED_SECRET}";
+        # 后端只回 JSON，由这一层按 Accept-Encoding 实时压（br 优先）
+        proxy_set_header Accept-Encoding "";
+
+        # 资源预热的进度是 SSE（text/event-stream）。缓冲会把事件攒住不发，
+        # 页面上的进度条就一直不动（前端有 2 秒轮询兜底，但体验差一截）。
+        proxy_buffering     off;
+        proxy_cache         off;
+        proxy_read_timeout  1h;
+        chunked_transfer_encoding on;
+
+        # 大文件上传不要先落盘再转发
+        proxy_request_buffering off;
+        # 往上游推请求体的超时。继承来的 60s 是按「几十 KB 的 JSON」定的：传几百 MB 的视频时
+        # 一旦某次写入等得久一点就会断开，浏览器侧看到的就是 502。上传上限 4g，这里给足。
+        proxy_send_timeout  1h;
+    }
+
+    # 后台不经前台域名访问；其余 /api/* 不开放
+    location /api/ {
+        return 404;
+    }
+
+    # 带内容哈希的产物。接了 CDN 以后浏览器从 cdn.<域名> 取，这里是回源与直连的兜底
+    location /assets/ {
+        include /etc/nginx/snippets/static-immutable.conf;
+        try_files $uri =404;
+    }
+
+    location /images/ {
+        include /etc/nginx/snippets/static-short.conf;
+        try_files $uri =404;
+    }
+
+    # SPA 兜底：前端路由由 TanStack Router 接管，刷新任何路径都要回 index.html。
+    # index.html 绝不能缓存，否则改版后老用户一直引用已被删掉的 chunk。
+    # 它本身也有 .br（admin/scripts/precompress.mjs 会压 .html），是整页的第一个字节。
+    location / {
+        brotli_static on;
+        gzip_static   on;
+        add_header Cache-Control "no-cache, must-revalidate" always;
+        add_header Vary "Accept-Encoding" always;
+        include /etc/nginx/snippets/https-headers.conf;
+        add_header X-Robots-Tag "noindex, nofollow, noarchive" always;
+        try_files $uri $uri/ /index.html;
+    }
+}

@@ -1,0 +1,26 @@
+# service 本地开发镜像：Go 1.27.3 + air 热重载 + goose 迁移 + sqlc 代码生成 + FFmpeg（转封装，S1-5）。
+# 源码通过 compose 挂载到 /app，这个镜像只装工具。
+FROM golang:1.27.3-bookworm
+
+ARG AIR_VERSION=v1.67.4
+ARG GOOSE_VERSION=v3.29.0
+ARG SQLC_VERSION=v1.31.1
+
+ENV GOTOOLCHAIN=local \
+    CGO_ENABLED=0
+
+RUN go install github.com/air-verse/air@${AIR_VERSION} \
+ && go install github.com/pressly/goose/v3/cmd/goose@${GOOSE_VERSION} \
+ && go install github.com/sqlc-dev/sqlc/cmd/sqlc@${SQLC_VERSION} \
+ && rm -rf /root/.cache/go-build
+
+# worker 的转封装任务与测试素材生成调用 ffmpeg / ffprobe（Debian bookworm 为 5.1，含 libx264、libwebp）
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ffmpeg \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+EXPOSE 8080
+
+# 有 .air.toml 用项目配置，没有就用默认参数编译 ./cmd/api
+CMD ["sh", "-c", "if [ -f .air.toml ]; then exec air -c .air.toml; else exec air --build.cmd 'go build -o ./tmp/api ./cmd/api' --build.bin './tmp/api' --build.exclude_dir 'tmp,vendor,db/queries'; fi"]

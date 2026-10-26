@@ -1,0 +1,14 @@
+{
+  "secret": "interop-fixture-secret-0123456789abcdef",
+  "kid": "k1",
+  "public_key": "WG3tRh_GTBPRCIpKwC7ggF0LChSHFhVs3bLWWmV5OkY",
+  "ephemeral_private_key_hex": "1f2e3d4c5b6a79881f2e3d4c5b6a79881f2e3d4c5b6a79881f2e3d4c5b6a7988",
+  "ts": 1792575000,
+  "method": "POST",
+  "request_target": "/api/me/history?from=web&lang=zh-CN",
+  "request_plaintext": "{\"episode_id\":42,\"position_sec\":15,\"note\":\"短剧\"}",
+  "x_enc": "1.k1.1792575000.tMOjcoZ48NDNVGoHgZeTylzNDx3EqIfldNOguElkS0w.FMRWWPC4Wue_SdpenUq0Gw",
+  "request_body_hex": "2237a714c416d98a01cc63fa203747ba166f32470a86c004c34f0db569a0af2ace3b771191ddaefcdfb84b383105c367fdaa27310a9d41536ba174ce190d6c9635e747",
+  "response_plaintext": "{\"code\":\"OK\",\"message\":\"ok\",\"data\":{\"saved\":true}}",
+  "response_body_hex": "242424242424242424242424ed0c16c3ae2a6a45993c9a9cef22c9515797c1fbbe37ad51a6fda95a0f9993bf3cefb249b1edb2c8d74c7a486a5358a83dbad53731ed42b40fd29419061615f4446f"
+}

@@ -1,0 +1,14 @@
+node_modules/
+.next/
+out/
+build/
+next-env.d.ts
+*.tsbuildinfo
+.env
+.env.local
+.DS_Store
+
+# 构建后由 scripts/precompress.mjs 生成的预压缩产物。
+# .next/ 已经整体忽略，这两行是给 public/ 下的静态文件准备的。
+public/**/*.br
+public/**/*.gz

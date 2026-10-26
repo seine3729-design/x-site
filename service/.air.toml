@@ -1,0 +1,19 @@
+# api 进程热重载（./dev.sh up 中的 service 容器使用）
+root = "."
+tmp_dir = "tmp/api"
+
+[build]
+cmd = "go build -o ./tmp/api/bin ./cmd/api"
+entrypoint = ["./tmp/api/bin"]
+include_ext = ["go", "sql"]
+exclude_dir = ["tmp", "vendor", "api"]
+exclude_regex = ["_test\\.go$"]
+delay = 300
+kill_delay = "2s"
+send_interrupt = true
+
+[log]
+time = false
+
+[misc]
+clean_on_exit = true

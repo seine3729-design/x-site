@@ -1,0 +1,333 @@
+# 本地开发编排。请用 ./dev.sh 启动，它会生成 .env、选择 profile 并等待健康检查。
+#
+# profile 说明
+#   （无）     基础设施：postgres、valkey、seaweedfs(S3)
+#   web        apps(SvelteKit + Bun) 与 admin(React + Vite) 开发服务器
+#   service    Go 后端（air 热重载），service/go.mod 存在时由 dev.sh 自动启用
+#   obs        Jaeger 链路追踪
+#   ftp        本地资源机（vsftpd），./dev.sh up --ftp 时启用
+#   feedback   反馈社区前台（Next.js，独立产品、单独吃 ~1.6G 内存），./dev.sh up --feedback 时才启用
+#
+# 所有端口默认只绑定 127.0.0.1。凭据只用于本机，线上配置见 docs/10。
+
+name: ${COMPOSE_PROJECT_NAME:-xsite}
+
+x-healthcheck: &hc
+  interval: 5s
+  timeout: 3s
+  retries: 30
+
+services:
+  # ------------------------------------------------------------------ 基础设施
+  postgres:
+    build:
+      context: ./deploy/local/postgres
+    image: xsite/postgres:18-bigm
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run ./dev.sh up}
+      XSITE_DB: ${XSITE_DB}
+      XSITE_APP_USER: ${XSITE_APP_USER}
+      XSITE_APP_PASSWORD: ${XSITE_APP_PASSWORD}
+      XSITE_RO_USER: ${XSITE_RO_USER}
+      XSITE_RO_PASSWORD: ${XSITE_RO_PASSWORD}
+      TZ: UTC
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements,auto_explain
+      - -c
+      - auto_explain.log_min_duration=200ms
+      - -c
+      - log_min_duration_statement=200
+      - -c
+      - max_connections=200
+    volumes:
+      # PG 18 官方镜像的 PGDATA 在 /var/lib/postgresql/18/docker，挂载上一级目录
+      - pgdata:/var/lib/postgresql
+      - ./deploy/local/postgres/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${PG_PORT:-5432}:5432"
+    healthcheck:
+      <<: *hc
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ${XSITE_DB} -h 127.0.0.1"]
+
+  valkey:
+    image: valkey/valkey:9.1
+    environment:
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD}
+    command:
+      - sh
+      - -c
+      - exec valkey-server --requirepass "$$VALKEY_PASSWORD" --save "" --appendonly no --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${VALKEY_PORT:-6379}:6379"
+    healthcheck:
+      <<: *hc
+      test: ["CMD-SHELL", "valkey-cli --no-auth-warning -a \"$$VALKEY_PASSWORD\" ping | grep -q PONG"]
+
+  # S3 兼容对象存储。MinIO 社区版已于 2026-04 归档，本地改用 SeaweedFS（Apache-2.0）
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.48
+    environment:
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+    entrypoint:
+      - sh
+      - -c
+      - |
+        mkdir -p /etc/seaweedfs
+        cat > /etc/seaweedfs/s3.json <<EOF
+        {"identities":[{"name":"xsite","credentials":[{"accessKey":"$$S3_ACCESS_KEY","secretKey":"$$S3_SECRET_KEY"}],"actions":["Admin","Read","Write","List","Tagging"]}]}
+        EOF
+        exec weed server -dir=/data -ip=seaweedfs -ip.bind=0.0.0.0 \
+          -master.volumeSizeLimitMB=512 -volume.max=0 \
+          -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json
+    volumes:
+      - s3data:/data
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${S3_PORT:-8333}:8333"
+    healthcheck:
+      <<: *hc
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8333/healthz"]
+
+  # 创建本地桶，执行完即退出
+  s3-init:
+    image: chrislusf/seaweedfs:4.48
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
+    environment:
+      BUCKETS: ${S3_BUCKET_MEDIA} ${S3_BUCKET_ASSETS}
+    entrypoint:
+      - sh
+      - -c
+      - |
+        for b in $$BUCKETS; do
+          echo "s3.bucket.create -name $$b" | weed shell -master=seaweedfs:9333 >/dev/null 2>&1 || true
+        done
+        echo "s3.bucket.list" | weed shell -master=seaweedfs:9333
+    restart: "no"
+
+  # 本地资源机（S1-6，vsftpd，不加密）：./dev.sh up --ftp 时启动，只在 compose 网络内可访问。
+  # 后台「资源机 FTP」登记：地址 ftp、端口 21、加密方式「不加密」、凭据标识 LOCAL（worker 读取 FTP_LOCAL_USER / FTP_LOCAL_PASSWORD）
+  ftp:
+    profiles: [ftp]
+    image: garethflowers/ftp-server:0.9.2
+    # vsftpd 作为 PID 1 时，会在回收不是它启动的子进程时崩溃（退出码 139）；交给 init 回收
+    init: true
+    environment:
+      FTP_USER: ${FTP_LOCAL_USER:-xsite}
+      FTP_PASS: ${FTP_LOCAL_PASSWORD:-}
+    volumes:
+      - ftpdata:/home/${FTP_LOCAL_USER:-xsite}
+
+  jaeger:
+    profiles: [obs]
+    image: jaegertracing/jaeger:2.22.0
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${JAEGER_UI_PORT:-16686}:16686"
+      - "${BIND_ADDR:-127.0.0.1}:${OTLP_GRPC_PORT:-4317}:4317"
+      - "${BIND_ADDR:-127.0.0.1}:${OTLP_HTTP_PORT:-4318}:4318"
+
+  # ------------------------------------------------------------------ 后端
+  service:
+    profiles: [service]
+    build:
+      context: ./deploy/local/service
+      dockerfile: Dockerfile.dev
+    image: xsite/service-dev:go1.27.3
+    working_dir: /app
+    environment: &service-env
+      APP_ENV: development
+      HTTP_ADDR: ":8080"
+      LOG_LEVEL: debug
+      # 本地开发启动时自动执行迁移；production 禁止开启（启动校验会拒绝）
+      AUTO_MIGRATE: "true"
+      # compose 网络内的 BFF 与宿主机端口转发都来自私有网段
+      TRUSTED_PROXIES: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+      # 本地容器网络内不启用 TLS；线上必须 sslmode=verify-full / rediss://
+      DATABASE_URL: postgres://${XSITE_APP_USER}:${XSITE_APP_PASSWORD}@postgres:5432/${XSITE_DB}?sslmode=disable
+      DATABASE_RO_URL: postgres://${XSITE_RO_USER}:${XSITE_RO_PASSWORD}@postgres:5432/${XSITE_DB}?sslmode=disable
+      VALKEY_URL: redis://:${VALKEY_PASSWORD}@valkey:6379/0
+      S3_ENDPOINT: http://seaweedfs:8333
+      S3_PUBLIC_ENDPOINT: http://localhost:${S3_PORT:-8333}
+      S3_REGION: us-east-1
+      S3_FORCE_PATH_STYLE: "true"
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      S3_BUCKET_MEDIA: ${S3_BUCKET_MEDIA}
+      S3_BUCKET_ASSETS: ${S3_BUCKET_ASSETS}
+      # 媒体转封装（S1-5，docs/specs/S1-5.md）：源文件桶（本地测试素材在 assets 桶的 fixtures/ 下；线上必须是私有的入库桶）
+      # 与内容密钥的包装密钥。是否执行转封装由 worker 的 MEDIA_TRANSCODE_CONCURRENCY 决定
+      MEDIA_SOURCE_BUCKET: ${S3_BUCKET_ASSETS}
+      MEDIA_KEKS: dev1:${MEDIA_KEK_SECRET:?run ./dev.sh up to fill MEDIA_KEK_SECRET}
+      # 存储源凭据的包装密钥（S1-6a，docs/10 第 3.2 节）：后台保存存储源凭据时用它信封加密
+      STORAGE_KEKS: dev1:${STORAGE_KEK_SECRET:?run ./dev.sh up to fill STORAGE_KEK_SECRET}
+      # 线路的媒体签名密钥（S1-6e，docs/10 第 8 节）：`引用:密钥`，线路的 sign_key_ref 指向其中一项。
+      # 不入库；线上由密钥管理同时下发给 service 与 CDN 边缘，轮换时新增一个引用并行过渡
+      LINE_SIGN_KEYS: dev-cdn:${LINE_SIGN_SECRET:?run ./dev.sh up to fill LINE_SIGN_SECRET}
+      # 孤立产物清理（S1-6f，docs/12 第 5 节第 6 条）：本地保留期缩短到 1 小时方便验证
+      MEDIA_ORPHAN_RETENTION: ${MEDIA_ORPHAN_RETENTION:-1h}
+      MEDIA_CLEANUP_INTERVAL: ${MEDIA_CLEANUP_INTERVAL:-24h}
+      # GeoIP（S1-6c，docs/12 第 4.2 节）：本地用 `./dev.sh run service go run ./cmd/mediatool geoip-sample
+      # -out /app/testdata/geoip/ip2region.xdb` 生成的小数据集；线上换成 ip2region 官方文件即可。
+      # 留空则地区一律未知（XX），只有 region_scope=global 的兜底线路会命中
+      GEOIP_XDB_PATH: ${GEOIP_XDB_PATH-/app/testdata/geoip/ip2region.xdb}
+      GEOIP_RELOAD_INTERVAL: ${GEOIP_RELOAD_INTERVAL:-10m}
+      # 播放令牌的签名密钥（S1-7，docs/10 第 4 节）：`kid:secret`，第一把签发、全部用于校验；只有 API 进程签发与校验，不给 CDN
+      PLAY_TOKEN_KEYS: dev1:${PLAY_TOKEN_SECRET:?run ./dev.sh up to fill PLAY_TOKEN_SECRET}
+      # 用户端 Access Token 签名密钥（S1-10，docs/10 第 4 节）：`kid:secret`，第一把签发、全部用于校验；只有 API 进程签发与校验
+      JWT_SIGNING_KEYS: dev1:${JWT_SIGNING_SECRET:?run ./dev.sh up to fill JWT_SIGNING_SECRET}
+      # 配置备份的签名密钥（S4-4，docs/06 第 29 节）：`kid:secret`，第一把签发、全部用于校验。
+      # 留空时导出不签名、导入也不验签；非开发环境必须配置，否则任何人构造一份备份都能导进来覆盖配置
+      CONFIG_BACKUP_KEYS: dev1:${CONFIG_BACKUP_SECRET:?run ./dev.sh up to fill CONFIG_BACKUP_SECRET}
+      BFF_SERVICE_TOKEN: ${BFF_SERVICE_TOKEN}
+      EDGE_SHARED_SECRET: ${EDGE_SHARED_SECRET}
+      # 用户端接口报文加密（docs/10 第 5.3 节）。development 默认不强制，curl 明文可调；客户端始终加密
+      API_ENC_KEYS: dev1:${API_ENC_SECRET:?run ./dev.sh up to fill API_ENC_SECRET}
+      # 运营后台页面的来源：/api/admin 写请求的 Origin 必须在其中（docs/03 第 2.3 节）
+      ADMIN_ORIGINS: http://localhost:${ADMIN_PORT:-5173},http://127.0.0.1:${ADMIN_PORT:-5173}
+      # 后台二次验证 TOTP 种子的包装密钥（S2-6，docs/10 第 6.3 节）：后台用户绑定 TOTP 时用它信封加密保存种子。
+      # 本地给一个固定开发默认值（≥32 字符）方便直接验证；production 必须由密钥管理注入覆盖
+      ADMIN_TOTP_KEKS: dev1:${ADMIN_TOTP_KEK_SECRET:-xsite-dev-admin-totp-kek-0123456789}
+      OTEL_SERVICE_NAME: xsite-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+      OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-true}
+      GOFLAGS: -buildvcs=false
+    volumes:
+      - ./service:/app
+      - go_mod:/go/pkg/mod
+      - go_build:/root/.cache/go-build
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${SERVICE_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      s3-init:
+        condition: service_completed_successfully
+    healthcheck:
+      <<: *hc
+      retries: 60
+      start_period: 120s
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/api/v1/health >/dev/null"]
+
+  worker:
+    profiles: [service]
+    image: xsite/service-dev:go1.27.3
+    working_dir: /app
+    command: ["air", "-c", ".air.worker.toml"]
+    environment:
+      <<: *service-env
+      AUTO_MIGRATE: "true"
+      # 本地资源机的账号密码（凭据标识 LOCAL，docs/11 第 9.2 节）；只给 worker，线上由密钥管理注入。未设置时视为没有配置
+      FTP_LOCAL_USER: ${FTP_LOCAL_USER:-}
+      FTP_LOCAL_PASSWORD: ${FTP_LOCAL_PASSWORD:-}
+      # 本地 worker 执行转封装（开发镜像带 FFmpeg），同时 1 个任务
+      MEDIA_TRANSCODE_CONCURRENCY: "1"
+    volumes:
+      - ./service:/app
+      - go_mod:/go/pkg/mod
+      - go_build:/root/.cache/go-build
+    depends_on:
+      service:
+        condition: service_healthy
+
+  # ------------------------------------------------------------------ 前端
+  apps:
+    profiles: [web]
+    image: oven/bun:1.4.2
+    working_dir: /app
+    environment:
+      SERVICE_INTERNAL_URL: http://service:8080
+      BFF_SERVICE_TOKEN: ${BFF_SERVICE_TOKEN}
+      VALKEY_URL: redis://:${VALKEY_PASSWORD}@valkey:6379/1
+      APPS_PORT: ${APPS_PORT:-3001}
+    command:
+      - sh
+      - -c
+      - bun install --frozen-lockfile && exec bun run dev --host 0.0.0.0 --port "$$APPS_PORT"
+    volumes:
+      - ./apps:/app
+      # 依赖装在容器卷里，避免和宿主机 macOS 的原生二进制混用
+      - apps_node_modules:/app/node_modules
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${APPS_PORT:-3001}:${APPS_PORT:-3001}"
+    depends_on:
+      valkey:
+        condition: service_healthy
+    healthcheck:
+      <<: *hc
+      retries: 60
+      start_period: 180s
+      test: ["CMD-SHELL", "bun -e \"fetch('http://127.0.0.1:'+process.env.APPS_PORT+'/api/v1/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))\""]
+
+  admin:
+    profiles: [web]
+    image: node:24-bookworm-slim
+    working_dir: /app
+    environment:
+      CI: "true"
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+      npm_config_store_dir: /pnpm/store
+      VITE_BACKEND_URL: http://service:8080
+      ADMIN_PORT: ${ADMIN_PORT:-5173}
+    command:
+      - sh
+      - -c
+      - corepack enable && corepack prepare pnpm@10.34.7 --activate && pnpm install --frozen-lockfile && exec pnpm dev --host 0.0.0.0 --port "$$ADMIN_PORT" --strictPort
+    volumes:
+      - ./admin:/app
+      - admin_node_modules:/app/node_modules
+      - pnpm_store:/pnpm/store
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${ADMIN_PORT:-5173}:${ADMIN_PORT:-5173}"
+    healthcheck:
+      <<: *hc
+      retries: 60
+      start_period: 240s
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:'+process.env.ADMIN_PORT+'/').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))\""]
+
+  # 反馈社区的 H5/PC 前台（feedback/，Next.js 16 + React 19）。
+  # 包管理用 Bun（feedback/docs/06 第 1.1 节），但 Next.js 的 Turbopack 跑在 Node 上，
+  # 所以镜像用 node:24 + 全局安装 bun，而不是直接用 bun 运行时跑 next。
+  feedback:
+    profiles: [feedback]
+    image: node:24-bookworm-slim
+    working_dir: /app
+    environment:
+      SERVICE_INTERNAL_URL: http://service:8080
+      BFF_SERVICE_TOKEN: ${BFF_SERVICE_TOKEN}
+      FEEDBACK_PORT: ${FEEDBACK_PORT:-3002}
+      NEXT_TELEMETRY_DISABLED: "1"
+    command:
+      - sh
+      - -c
+      - npm i -g bun@1.4.4 --silent && bun install && exec ./node_modules/.bin/next dev --hostname 0.0.0.0 --port "$$FEEDBACK_PORT"
+    volumes:
+      - ./feedback:/app
+      # 依赖与构建缓存装在容器卷里：宿主机那份是 darwin-arm64 的，不能混用
+      - feedback_node_modules:/app/node_modules
+      - feedback_next:/app/.next
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${FEEDBACK_PORT:-3002}:${FEEDBACK_PORT:-3002}"
+    healthcheck:
+      <<: *hc
+      retries: 60
+      start_period: 300s
+      test:
+        - CMD-SHELL
+        - node -e "fetch('http://127.0.0.1:'+process.env.FEEDBACK_PORT+'/').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
+
+volumes:
+  pgdata:
+  s3data:
+  ftpdata:
+  go_mod:
+  go_build:
+  apps_node_modules:
+  admin_node_modules:
+  feedback_node_modules:
+  feedback_next:
+  pnpm_store:

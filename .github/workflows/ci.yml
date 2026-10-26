@@ -1,0 +1,251 @@
+name: CI
+
+# 四端分别构建、lint、测试；只跑被改动影响的那几端（docs/11 X0-3）。
+#
+# 路径过滤没有用第三方 action：changes 任务用一次 git diff 得出结论，
+# 其余任务按它的输出决定跑不跑。少一个供应链入口（docs/00 第 6 节）。
+on:
+  push:
+    branches-ignore: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      service: ${{ steps.filter.outputs.service }}
+      apps: ${{ steps.filter.outputs.apps }}
+      admin: ${{ steps.filter.outputs.admin }}
+      feedback: ${{ steps.filter.outputs.feedback }}
+      deploy: ${{ steps.filter.outputs.deploy }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - id: filter
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          # 手动触发、首次推送分支、或拿不到基线时全部跑一遍
+          if [[ -z "${BASE_SHA:-}" || "$BASE_SHA" == "0000000000000000000000000000000000000000" ]] \
+             || ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            changed='(全部)'
+          else
+            changed=$(git diff --name-only "$BASE_SHA" HEAD)
+          fi
+          echo "改动文件："
+          printf '%s\n' "$changed" | sed 's/^/  /'
+
+          emit() {
+            if [[ "$changed" == '(全部)' ]] || printf '%s\n' "$changed" | grep -qE "$2"; then
+              echo "$1=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "$1=false" >> "$GITHUB_OUTPUT"
+            fi
+          }
+          emit service  '^service/'
+          emit apps     '^apps/'
+          emit admin    '^admin/'
+          emit feedback '^feedback/'
+          emit deploy   '^(deploy/|\.github/workflows/)'
+
+  service:
+    needs: changes
+    if: needs.changes.outputs.service == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: service/go.mod
+          cache-dependency-path: service/go.sum
+      - name: 依赖校验
+        working-directory: service
+        run: go mod download && go mod verify
+      - name: go vet
+        working-directory: service
+        run: go vet ./...
+      - name: 构建
+        working-directory: service
+        run: go build ./...
+      # 需要真实 PostgreSQL / Valkey 的集成测试会自己跳过（没有连接串时），
+      # 这里只保证单测与编译。真实栈上的验收走本地 ./dev.sh
+      - name: 单元测试
+        working-directory: service
+        run: go test ./...
+
+  apps:
+    needs: changes
+    if: needs.changes.outputs.apps == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - run: bun install --frozen-lockfile
+        working-directory: apps
+      - run: bun run check
+        working-directory: apps
+      - run: bun run lint
+        working-directory: apps
+      - run: bun run test
+        working-directory: apps
+      - run: bun run build
+        working-directory: apps
+      # 首屏 JS 预算（docs/08 第 1 节），超标直接失败（docs/11 W5-1）
+      - run: bun run budget
+        working-directory: apps
+      # 预压缩必须真的发生：adapter 的 precompress 一旦被关掉，线上会从「直接送 Brotli 11」
+      # 退化成「按请求现压 5 档」，而功能完全正常，只有体积和 CPU 变差 —— 没有这道检查发现不了
+      - name: 确认产物带 Brotli 预压缩
+        working-directory: apps
+        run: |
+          set -euo pipefail
+          br=$(find build/client -name '*.br' | wc -l)
+          gz=$(find build/client -name '*.gz' | wc -l)
+          echo "预压缩：$br 个 .br，$gz 个 .gz"
+          [[ $br -gt 0 && $gz -gt 0 ]] || { echo "缺少预压缩产物（检查 vite.config.ts 的 precompress）" >&2; exit 1; }
+
+  admin:
+    needs: changes
+    if: needs.changes.outputs.admin == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - run: corepack enable && corepack prepare pnpm@10.34.7 --activate
+      - run: pnpm install --frozen-lockfile
+        working-directory: admin
+      - run: pnpm typecheck
+        working-directory: admin
+      - run: pnpm lint
+        working-directory: admin
+      # build 末尾会跑 scripts/precompress.mjs
+      - run: pnpm build
+        working-directory: admin
+      - name: 确认产物带 Brotli 预压缩
+        working-directory: admin
+        run: |
+          set -euo pipefail
+          br=$(find dist -name '*.br' | wc -l)
+          gz=$(find dist -name '*.gz' | wc -l)
+          echo "预压缩：$br 个 .br，$gz 个 .gz"
+          [[ -f dist/index.html.br ]] || { echo "index.html 没有预压缩（它由边缘层直接发，是首屏第一个字节）" >&2; exit 1; }
+          [[ $br -gt 0 && $gz -gt 0 ]] || { echo "缺少预压缩产物（检查 scripts/precompress.mjs 是否串在 build 后面）" >&2; exit 1; }
+          # sourcemap 不能进产物目录：它由 Dockerfile 挪到 /sourcemaps，这里只防构建脚本被改回去
+          maps=$(find dist -name '*.map' | wc -l)
+          echo "dist 里的 .map：$maps（镜像构建时会挪到 /sourcemaps）"
+
+  feedback:
+    needs: changes
+    if: needs.changes.outputs.feedback == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.4'
+      - run: bun install --frozen-lockfile
+        working-directory: feedback
+      - run: bun run typecheck
+        working-directory: feedback
+      - run: bun run lint
+        working-directory: feedback
+      - run: bun run test
+        working-directory: feedback
+      # build 末尾会跑 scripts/precompress.mjs
+      - run: bun run build
+        working-directory: feedback
+      - name: 确认产物带 Brotli 预压缩
+        working-directory: feedback
+        run: |
+          set -euo pipefail
+          br=$(find .next/static -name '*.br' | wc -l)
+          gz=$(find .next/static -name '*.gz' | wc -l)
+          echo "预压缩：$br 个 .br，$gz 个 .gz"
+          [[ $br -gt 0 && $gz -gt 0 ]] || { echo "缺少预压缩产物（检查 scripts/precompress.mjs 是否串在 build 后面）" >&2; exit 1; }
+      # 这个检查要起服务抓真实 HTML（构建清单推算出的列表和浏览器实际取的差 6 个文件，
+      # 原因见 scripts/check-js-budget.mjs 顶部）。所以这里先把 next start 拉起来。
+      - name: 首屏 JS 预算
+        working-directory: feedback
+        run: |
+          set -euo pipefail
+          PORT=3002 bun run start > /tmp/feedback-start.log 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          for i in $(seq 1 60); do
+            if curl -fsS -o /dev/null http://127.0.0.1:3002/ 2>/dev/null; then break; fi
+            if [[ $i -eq 60 ]]; then echo "next start 60 秒没起来："; cat /tmp/feedback-start.log; exit 1; fi
+            sleep 1
+          done
+          BASE=http://127.0.0.1:3002 bun run check:budget
+        env:
+          BFF_SERVICE_TOKEN: ci-placeholder-token-not-used-at-build-time
+
+  # 部署用的配置自己也要能过语法检查：渲染出来的 nginx 配置坏掉的话，
+  # 发现时间会是「发布时整站 502」，而不是现在。
+  deploy-config:
+    needs: changes
+    if: needs.changes.outputs.deploy == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: compose 文件校验
+        working-directory: deploy/prod
+        run: |
+          set -euo pipefail
+          cp .env.example .env.ci
+          # 校验只看结构，密钥长度无关；给几个占位值让必填项通过
+          secret=$(printf 'c%.0s' {1..40})
+          for key in POSTGRES_PASSWORD XSITE_APP_PASSWORD XSITE_RO_PASSWORD VALKEY_PASSWORD \
+                     S3_ACCESS_KEY S3_SECRET_KEY BFF_SERVICE_TOKEN EDGE_SHARED_SECRET; do
+            sed -i -E "s|^${key}=.*|${key}=${secret}|" .env.ci
+          done
+          for key in API_ENC_KEYS JWT_SIGNING_KEYS PLAY_TOKEN_KEYS MEDIA_KEKS \
+                     STORAGE_KEKS LINE_SIGN_KEYS CONFIG_BACKUP_KEYS ADMIN_TOTP_KEKS; do
+            sed -i -E "s|^${key}=.*|${key}=k1:${secret}|" .env.ci
+          done
+          docker compose -f compose.yaml --env-file .env.ci config >/dev/null
+          docker compose -f compose.yaml --env-file .env.ci --profile release config --services
+          rm -f .env.ci
+
+      - name: nginx 配置渲染与语法检查
+        run: |
+          set -euo pipefail
+          docker build -t xsite-edge-ci deploy/prod/nginx
+          secret=$(printf 'c%.0s' {1..40})
+          # EDGE_CHECK_ONLY=1：渲染模板 + 造占位证书 + nginx -t 后退出，不起服务
+          run_check() {
+            docker run --rm -e EDGE_CHECK_ONLY=1 \
+              -e ADMIN_DOMAIN=admin.example.com \
+              -e FEEDBACK_DOMAIN=feedback.example.com \
+              -e EDGE_SHARED_SECRET="$secret" \
+              "$@" xsite-edge-ci
+          }
+          echo "— 带别名 —"
+          run_check -e APPS_DOMAIN=example.com -e APPS_ALIASES=www.example.com
+          echo "— 不带别名（entrypoint 应跳过别名块）—"
+          run_check -e APPS_DOMAIN=example.com
+
+      - name: shell 脚本语法检查
+        run: |
+          set -euo pipefail
+          for f in deploy/prod/scripts/*.sh; do bash -n "$f"; done
+          for f in deploy/prod/nginx/entrypoint.sh deploy/prod/certbot/entrypoint.sh; do sh -n "$f"; done
+          echo "脚本语法检查通过"

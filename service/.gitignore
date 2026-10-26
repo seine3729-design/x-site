@@ -1,0 +1,21 @@
+tmp/
+*.test
+coverage.out
+# 本地开发用的 GeoIP 数据集（由 mediatool geoip-sample 生成，S1-6c）
+testdata/geoip/
+
+# `go build ./cmd/<名>` 不加 -o 时会在当前目录留下同名二进制（每个 30 MB 上下）。
+#
+# 开头的 / 把匹配限制在 service/ 这一层，否则会连 cmd/api、cmd/worker 这些**目录**
+# 一起忽略掉源码。新增 cmd/ 子目录时在这里补一行。
+#
+# 刻意**没有** /api：gitignore 分不清同名的文件和目录，写上会把契约目录
+# service/api/（openapi.yaml 在里面）一起忽略掉。而且 `go build ./cmd/api` 在 service/ 下
+# 本来就会因为输出名和这个目录撞名而失败，这个二进制不可能出现 —— 要编就得 -o /dev/null。
+/worker
+/admintool
+/mediatool
+/collectortool
+/_uiseed
+/_uploadclean
+/_uploadprovidercheck

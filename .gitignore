@@ -1,0 +1,16 @@
+# 本地开发凭据（由 ./dev.sh 生成）
+.env
+.local/
+.DS_Store
+.backup/
+
+# 生产部署：.env 只存在于服务器上，geoip 数据文件按环境单独放
+deploy/prod/.env
+deploy/prod/.env.*
+!deploy/prod/.env.example
+deploy/prod/geoip/
+
+# 会话产物：评审报告、临时脚本的缓存，不进仓库
+semantic-review/
+__pycache__/
+*.pyc
