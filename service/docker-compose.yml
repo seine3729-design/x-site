@@ -37,9 +37,15 @@ x-image: &image
     context: .
     dockerfile: Dockerfile
 
-# 后端三类进程（api / worker / media-worker）共享同一份配置。
-# 只有某一类需要的项在各自的服务里追加。
+# 迁移容器只需要这个连接串。密码必须是 URI 安全字符（部署生成器输出十六进制），
+# 不然 @、:、/ 等字符会把 PostgreSQL URL 解析坏。
+x-database-env: &database-env
+  DATABASE_URL: postgres://${XSITE_APP_USER:-xsite_app}:${XSITE_APP_PASSWORD:?必须设置 XSITE_APP_PASSWORD}@postgres:5432/${XSITE_DB:-xsite}?sslmode=disable
+
+# API 与 worker 共享完整配置。只有某一类需要的项在各自服务里追加。
+# 刻意不让 migrate 复用这里：它只跑 Goose，BFF / Valkey / S3 / 密钥等配置不能阻塞建表。
 x-service-env: &service-env
+  <<: *database-env
   APP_ENV: production
   HTTP_ADDR: ':8080'
   LOG_LEVEL: ${LOG_LEVEL:-info}
@@ -50,7 +56,6 @@ x-service-env: &service-env
   # 写宽等于让任何人伪造客户端 IP
   TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.16.0.0/12}
 
-  DATABASE_URL: postgres://${XSITE_APP_USER:-xsite_app}:${XSITE_APP_PASSWORD:?必须设置 XSITE_APP_PASSWORD}@postgres:5432/${XSITE_DB:-xsite}?sslmode=disable
   DATABASE_RO_URL: postgres://${XSITE_RO_USER:-xsite_ro}:${XSITE_RO_PASSWORD:?必须设置 XSITE_RO_PASSWORD}@postgres:5432/${XSITE_DB:-xsite}?sslmode=disable
   # 后端用 0 号库，apps 的 BFF 用 1 号库（刻意分开，撞号会让两边的限流计数互相干扰）
   VALKEY_URL: redis://:${VALKEY_PASSWORD:?必须设置 VALKEY_PASSWORD}@valkey:6379/0
@@ -178,7 +183,8 @@ services:
     restart: 'no'
     entrypoint: ['/app/admintool']
     command: ['migrate']
-    environment: *service-env
+    # 迁移只用 DATABASE_URL；完整运行时配置仍只注入 service / worker / media-worker。
+    environment: *database-env
     depends_on:
       postgres:
         condition: service_healthy

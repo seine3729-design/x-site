@@ -263,3 +263,24 @@ func TestLoad_RejectsInvalidStorageKEKs(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadMigration_OnlyRequiresDatabaseURL(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("DATABASE_URL", "postgres://migration:password@postgres/xsite")
+
+	cfg, err := LoadMigration()
+	if err != nil {
+		t.Fatalf("迁移只依赖 DATABASE_URL，不应被 Valkey、BFF、S3 或密钥配置阻断：%v", err)
+	}
+	if cfg.DatabaseURL != "postgres://migration:password@postgres/xsite" {
+		t.Fatalf("DATABASE_URL = %q", cfg.DatabaseURL)
+	}
+}
+
+func TestLoadMigration_RequiresDatabaseURL(t *testing.T) {
+	clearEnv(t)
+
+	if _, err := LoadMigration(); err == nil || !strings.Contains(err.Error(), "DATABASE_URL") {
+		t.Fatalf("缺少 DATABASE_URL 应失败并指出变量，得到 %v", err)
+	}
+}

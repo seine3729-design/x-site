@@ -65,7 +65,9 @@ func migrate(args []string) error {
 	if len(args) > 1 {
 		return errors.New(usage)
 	}
-	cfg, err := config.Load()
+	// 迁移只需要 DATABASE_URL。不能加载 API/worker 的完整 Config：BFF、Valkey、S3、
+	// 报文加密或后台二次验证的任意配置没填好，都不该阻止数据库 schema 升级。
+	cfg, err := config.LoadMigration()
 	if err != nil {
 		return err
 	}

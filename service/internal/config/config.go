@@ -19,7 +19,16 @@ import (
 // AdminTOTPKEKInfo 是后台 TOTP 种子 KEK 的 HKDF info（区分用途，docs/10 第 3.2 节）。
 const AdminTOTPKEKInfo = "xsite-admin-totp/v1"
 
-// Config 是 api 与 worker 进程共用的配置。
+// MigrationConfig 是数据库迁移专用的最小配置。
+//
+// `admintool migrate` 在连接后只执行嵌入的 Goose SQL，不会启动 HTTP、Valkey、对象存储、
+// BFF、播放或后台二次验证。因此它不能复用 Config / Load：否则这些与迁移无关的生产配置
+// 任一缺失或格式不对，都会让「建表之前」的迁移容器退出，发布流程被卡住。
+type MigrationConfig struct {
+	DatabaseURL string `env:"DATABASE_URL,required"`
+}
+
+// Config 是 api 与 worker 进程共用的完整配置。
 type Config struct {
 	AppEnv   string `env:"APP_ENV" envDefault:"production"`
 	HTTPAddr string `env:"HTTP_ADDR" envDefault:":8080"`
@@ -105,6 +114,16 @@ func Load() (Config, error) {
 	cfg.FTPCredentials = creds
 	if err := cfg.validate(credProblems...); err != nil {
 		return Config{}, err
+	}
+	return cfg, nil
+}
+
+// LoadMigration 只读取迁移实际需要的数据库连接串。
+// 保持这个加载器窄：不要为了「统一」改回 Load()，完整 API/worker 配置的校验仍只由它们自己承担。
+func LoadMigration() (MigrationConfig, error) {
+	cfg, err := env.ParseAs[MigrationConfig]()
+	if err != nil {
+		return MigrationConfig{}, fmt.Errorf("读取迁移配置失败: %w", err)
 	}
 	return cfg, nil
 }
