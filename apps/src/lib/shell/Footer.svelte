@@ -1,4 +1,5 @@
 <script lang="ts">
+	import AdSlot from '#lib/home/AdSlot.svelte';
 	import { getI18n } from '#lib/i18n/context.ts';
 	import LanguageMenu from '#lib/i18n/LanguageMenu.svelte';
 	import { getSite, toNavItems } from '#lib/site.ts';
@@ -78,6 +79,11 @@
 				</ul>
 			</nav>
 		{/each}
+	</div>
+	<!-- 页脚横幅与文字链广告位（docs/04 C.5） -->
+	<div class="page-x mt-8 flex flex-col gap-3">
+		<AdSlot slot="footer_banner" />
+		<AdSlot slot="text_link" />
 	</div>
 	<div class="page-x mt-8 border-t border-line pt-6 text-xs leading-5 text-fg-subtle md:mt-10">
 		<!-- 后台填了版权文字就用它（已按语言自行填写），否则用文案模板 -->

@@ -2,7 +2,8 @@
 -- name: GetPlayableEpisode :one
 -- 选源与清单：剧前台可见（不在回收站、已上架、定时已到点，与 S1-4 的可见性一致）且分集已转封装完成才返回，否则视为不存在。
 -- video_object_id 是当前产物，选线据此只挑已有就绪副本的存储源（S1-6f）；object_key 是产物目录，清单接口据此读清单原文、拼切片地址。
-SELECT e.id, e.drama_id, e.access, e.trial_sec, e.video_object_id::bigint AS video_object_id, o.key AS object_key
+-- duration_sec 是整集时长，前台据此把进度条显示为整集长度；试看时清单只含前 trial_sec 秒，可播区间到此为止、其余为锁定段。
+SELECT e.id, e.drama_id, e.access, e.trial_sec, e.duration_sec, e.video_object_id::bigint AS video_object_id, o.key AS object_key
 FROM episode e
 JOIN drama d ON d.id = e.drama_id
 JOIN media_object o ON o.id = e.video_object_id

@@ -3,7 +3,8 @@
 	import { page } from '$app/state';
 	import { PUBLIC_SITE_URL } from '$app/env/public';
 	import { onMount, untrack } from 'svelte';
-	import DramaActions from '#lib/drama/DramaActions.svelte';
+	import CommentSection from '#lib/comment/CommentSection.svelte';
+		import DramaActions from '#lib/drama/DramaActions.svelte';
 	import DramaCard from '#lib/drama/DramaCard.svelte';
 	import EpisodeGrid from '#lib/drama/EpisodeGrid.svelte';
 	import { dramaPath, episodesLabel, playPath } from '#lib/drama/labels.ts';
@@ -14,9 +15,11 @@
 	import { PlayerController } from '#lib/player/controller.svelte.ts';
 	import { reportLine } from '#lib/player/line-report.ts';
 	import Player from '#lib/player/Player.svelte';
+	import { featureOn, getSite } from '#lib/site.ts';
 	import { session } from '#lib/stores/session.svelte.ts';
 	import { toasts } from '#lib/stores/toast.svelte.ts';
 	import Icon from '#lib/ui/Icon.svelte';
+	import Sheet from '#lib/ui/Sheet.svelte';
 	import Modal from '#lib/ui/Modal.svelte';
 
 	let { data } = $props();
@@ -38,7 +41,43 @@
 	let sheetOpen = $state(false);
 	let countdown = $state<number | null>(null);
 
+	// —— 评论（docs/04 C.4）：电脑端与选集同一块面板切换，手机沉浸式用抽屉；两边都按需挂载 ——
+	const site = $derived(getSite());
+	const commentsOn = $derived(featureOn(site.features, 'comments'));
+	/** episodes：选集 + 相关推荐；comments：评论区 */
+	let panel = $state<'episodes' | 'comments'>('episodes');
+	let commentsOpen = $state(false);
+	let commentCount = $state(0);
+	/** 全部加载完才给确切条数，还有下一页时显示「N+」（列表接口是游标分页，没有总数） */
+	let commentComplete = $state(false);
+	const commentLabel = $derived(
+		commentCount > 0
+			? i18n.t('comment.titleCount', { n: commentComplete ? commentCount : `${commentCount}+` })
+			: i18n.t('comment.title')
+	);
+	const countComments = (n: number, complete: boolean) => {
+		commentCount = n;
+		commentComplete = complete;
+	};
+
+	// 评论总开关关掉时回到选集，不把入口留在界面上
+	$effect(() => {
+		if (!commentsOn) {
+			panel = 'episodes';
+			commentsOpen = false;
+		}
+	});
+
+	// 换集：评论是按分集的，条数要跟着重置（CommentSection 自己会重新取数）
+	$effect(() => {
+		void episode.id;
+		commentCount = 0;
+		commentComplete = false;
+	});
+
 	function goEpisode(number: number) {
+		// 先收掉连播倒计时：点「立即播放」也走这里，否则提示会跟着留在下一集上
+		countdown = null;
 		void goto(i18n.path(playPath(drama.id, number)), { replace: true, reset: false });
 	}
 
@@ -136,9 +175,12 @@
 		return () => clearInterval(timer);
 	});
 
-	// 播完一集：3 秒倒计时自动连播下一集（可取消）
+	// 播完一集：3 秒倒计时自动连播下一集（可取消）。
+	// 必须确认 'ended' 属于当前这一集：换集后 data 已经是新一集，而 player.load() 要等读完本机续播位置
+	// 才调用，这段时间 phase 还停在上一集的 'ended'。少了这个判断，倒计时会在新一集上重新冒出来
+	// （用户看到的「进了下一集提示还在」），到点还会再跳一集。
 	$effect(() => {
-		if (player.phase !== 'ended') {
+		if (player.phase !== 'ended' || player.episodeId !== episode.id) {
 			return;
 		}
 		void saveProgress();
@@ -205,12 +247,14 @@
 
 	const title = $derived(`${episodeLabel} - ${drama.title} - ${page.data.site.name}`);
 	const landscape = $derived(player.aspect > 1);
+	/** 这一集的正式地址：<link rel=canonical> 与分享 / 海报二维码共用 */
+	const canonical = $derived((PUBLIC_SITE_URL || page.url.origin) + i18n.path(playPath(drama.id, episode.number)));
 </script>
 
 <svelte:head>
 	<title>{title}</title>
 	<meta name="description" content={drama.summary.slice(0, 120) || drama.title} />
-	<link rel="canonical" href={(PUBLIC_SITE_URL || page.url.origin) + i18n.path(playPath(drama.id, episode.number))} />
+	<link rel="canonical" href={canonical} />
 	<meta property="og:title" content="{drama.title} · {episodeLabel}" />
 	<meta property="og:type" content="video.episode" />
 </svelte:head>
@@ -232,7 +276,14 @@
 		<div class="flex-1"></div>
 		{#if !player.wall}
 			<div class="pointer-events-auto absolute end-2 bottom-36 flex flex-col items-center gap-5">
-				<DramaActions {drama} variant="rail" />
+				<DramaActions
+					{drama}
+					variant="rail"
+					oncomment={commentsOn ? () => (commentsOpen = true) : undefined}
+					{commentCount}
+					shareUrl={canonical}
+					shareSubtitle={episodeLabel}
+				/>
 				<button type="button" class="flex flex-col items-center gap-1" onclick={() => (sheetOpen = true)}>
 					<span class="grid size-11 place-items-center rounded-full bg-black/45"><Icon name="list-video" size={23} /></span>
 					<span class="text-[11px] font-medium drop-shadow">{i18n.t('drama.episodesShort')}</span>
@@ -264,17 +315,19 @@
 	</div>
 {/snippet}
 
-<div class="lg:page-x lg:grid lg:grid-cols-[minmax(0,1fr)_23.5rem] lg:gap-6 lg:pt-4 lg:pb-6 xl:grid-cols-[minmax(0,1fr)_26rem]">
+<!-- 竖屏视频的宽度 = 可用高度 × 比例，所以电脑端尽量把纵向空间还给舞台（上下留白压到 1.5rem）；
+     侧栏加宽到 25 / 30rem：舞台是高度受限的，加宽侧栏不会把视频挤小，但评论读起来宽敞得多 -->
+<div class="lg:page-x lg:grid lg:grid-cols-[minmax(0,1fr)_25rem] lg:gap-5 lg:pt-2 lg:pb-4 xl:grid-cols-[minmax(0,1fr)_30rem]">
 	<!-- 播放区：手机铺满屏幕，电脑端居中的竖屏画框 + 模糊封面氛围背景 -->
 	<section
-		class="fixed inset-x-0 top-0 bottom-[calc(var(--tabbar-h)+var(--safe-bottom))] z-30 bg-black lg:relative lg:inset-auto lg:z-auto lg:grid lg:h-[calc(100dvh-var(--header-h)-2.5rem)] lg:min-h-[32rem] lg:place-items-center lg:overflow-hidden lg:rounded-panel lg:ring-1 lg:ring-line"
+		class="fixed inset-x-0 top-0 bottom-[calc(var(--tabbar-h)+var(--safe-bottom))] z-30 bg-black lg:relative lg:inset-auto lg:z-auto lg:grid lg:h-[calc(100dvh-var(--header-h)-1.5rem)] lg:min-h-[28rem] lg:place-items-center lg:overflow-hidden lg:rounded-panel lg:ring-1 lg:ring-line"
 		aria-label={i18n.t('player.region', { title: drama.title })}
 	>
 		<div class="absolute inset-0 hidden opacity-50 lg:block" aria-hidden="true">{@render backdrop()}</div>
 		<div
 			class="relative size-full lg:overflow-hidden lg:rounded-2xl lg:shadow-pop {landscape
 				? 'lg:h-auto lg:max-h-full lg:w-[calc(100%-3rem)]'
-				: 'lg:h-[calc(100%-2rem)] lg:w-auto lg:max-w-full'}"
+				: 'lg:h-[calc(100%-0.5rem)] lg:w-auto lg:max-w-full'}"
 			style:aspect-ratio={player.aspect}
 		>
 			<Player
@@ -311,25 +364,44 @@
 			{#if drama.summary}
 				<p class="mt-3 line-clamp-3 text-[13px] leading-6 text-fg-muted">{drama.summary}</p>
 			{/if}
-			<div class="mt-4"><DramaActions {drama} /></div>
+			<div class="mt-4"><DramaActions {drama} shareUrl={canonical} shareSubtitle={episodeLabel} /></div>
 		</div>
 
+		<!-- 侧栏下半块在「选集」与「评论」之间切换：aside 已占满视口高度，两块并排会把选集挤得没法用 -->
 		<div class="flex min-h-0 flex-1 flex-col rounded-panel border border-line bg-surface p-5">
-			<div class="mb-3 flex items-center justify-between">
-				<h2 class="text-base font-bold">{i18n.t('drama.episodes')}</h2>
-				<span class="text-xs text-fg-subtle">{episodesLabel(i18n, drama)}</span>
-			</div>
-			<div class="min-h-0 flex-1 overflow-y-auto pe-1">
-				<EpisodeGrid dramaId={drama.id} episodes={drama.episodes} current={episode.number} dense />
-				{#if drama.related.length > 0}
-					<h2 class="mt-6 mb-3 text-base font-bold">{i18n.t('drama.related')}</h2>
-					<ul class="grid grid-cols-3 gap-3">
-						{#each drama.related.slice(0, 9) as card (card.id)}
-							<li><DramaCard {card} /></li>
-						{/each}
-					</ul>
+			<div class="mb-3 flex items-center justify-between gap-2">
+				{#if commentsOn}
+					<div class="flex gap-1.5">
+						<button type="button" class="chip" aria-pressed={panel === 'episodes'} onclick={() => (panel = 'episodes')}>
+							{i18n.t('drama.episodes')}
+						</button>
+						<button type="button" class="chip" aria-pressed={panel === 'comments'} onclick={() => (panel = 'comments')}>
+							{commentLabel}
+						</button>
+					</div>
+				{:else}
+					<h2 class="text-base font-bold">{i18n.t('drama.episodes')}</h2>
+				{/if}
+				{#if panel === 'episodes'}
+					<span class="text-xs text-fg-subtle">{episodesLabel(i18n, drama)}</span>
 				{/if}
 			</div>
+			{#if panel === 'comments'}
+				<!-- 评论区自己管滚动与贴底输入框，不套外层滚动容器 -->
+				<CommentSection class="flex-1" episodeId={episode.id} oncount={countComments} />
+			{:else}
+				<div class="min-h-0 flex-1 overflow-y-auto pe-1">
+					<EpisodeGrid dramaId={drama.id} episodes={drama.episodes} current={episode.number} dense />
+					{#if drama.related.length > 0}
+						<h2 class="mt-6 mb-3 text-base font-bold">{i18n.t('drama.related')}</h2>
+						<ul class="grid grid-cols-3 gap-3">
+							{#each drama.related.slice(0, 9) as card (card.id)}
+								<li><DramaCard {card} /></li>
+							{/each}
+						</ul>
+					{/if}
+				</div>
+			{/if}
 		</div>
 	</aside>
 </div>
@@ -353,3 +425,10 @@
 		onpick={() => (sheetOpen = false)}
 	/>
 </Modal>
+
+<!-- 手机沉浸式下评论从底部滑上来（固定高度，可下拉关闭），内容在打开时才挂载 -->
+<Sheet fill open={commentsOpen} title={commentLabel} onclose={() => (commentsOpen = false)}>
+	{#if commentsOpen}
+		<CommentSection class="flex-1" variant="sheet" episodeId={episode.id} oncount={countComments} />
+	{/if}
+</Sheet>

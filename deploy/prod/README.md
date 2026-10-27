@@ -1,11 +1,15 @@
-# 生产部署（GitHub Actions + Docker + nginx + R2）
+# 生产部署（GitHub Actions + Docker + nginx + R2）—— 备用路径
 
-> 对应 `docs/11` 的 X0-3（CI 流水线）与 X0-6（容器编排、域名与证书自动化）。
-> 最后核对：2026-10-26
+> **主路径是 Dokploy，见 [`docs/14-部署上线流程.md`](../../docs/14-部署上线流程.md)。**
+> 本目录这一套（自建 nginx + certbot + `.github/workflows/deploy.yml`）和 Dokploy **互斥**：
+> 两者都要独占宿主机的 80/443 与 `duanju66.cc`，不能同机同时起。
 >
-> **第一次部署请按 [`docs/14-部署上线流程.md`](../../docs/14-部署上线流程.md) 的顺序走**：
-> 那份文档是从「代码还在本机」到「三个域名可访问」的操作手册（推 GitHub、Secrets、
-> 服务器初始化、DNS、验收清单、排查表）。本文是机制说明与文件清单，用来查「为什么这么设计」。
+> 它仍然完整可用，也是目前唯一覆盖四端（`service` / `apps` / `admin` / `feedback`）的编排；
+> Dokploy 那条目前只接了前台 `apps/`。另外本文的机制说明仍然有效，Dokploy 沿用同样的结论——
+> 边缘层、压缩链路、R2 的设计原理与实测数据都在这里，遇到「为什么这么设计」就查本文。
+>
+> 对应 `docs/11` 的 X0-3（CI 流水线）与 X0-6（容器编排、域名与证书自动化）。
+> 最后核对：2026-10-27
 
 ## 1. 结构
 
@@ -188,16 +192,16 @@ cd /opt/xsite
 
 ### apps 用反向代理型 CDN，不用独立资源域名
 
-SvelteKit 不允许 Service Worker 和 `paths.assets` 共存。填了 `CDN_ASSET_PREFIX`，`bun run build` 直接报错退出：
+> **这一节是本路径的配置选择，不再是技术限制。** SvelteKit 原来不允许 Service Worker 和
+> `paths.assets` 共存（填 `CDN_ASSET_PREFIX` 就报 `service_worker_assets` 退出），现在 SW 已经
+> 移出它的管辖 —— 源码在 `apps/src/sw/`，由 `apps/scripts/build-sw.ts` 在 `vite build` 之前编译到
+> `static/`，资源缓存也支持跨源了。Dokploy 那条路径（`docs/14`）就是让浏览器直连
+> `cdn.duanju66.cc` 取产物的。
 
-```
-SvelteKit error: service_worker_assets
-Cannot use service worker alongside `config.paths.assets`
-```
-
-`apps/` 有 Service Worker（`docs/04` D 节：离线兜底 + `/_app/immutable/*` 缓存优先），保留它。
-所以 **`duanju66.cc` 整体挂到 Cloudflare 代理（橙云）后面**，`/_app/immutable/*` 在同源地址上被
-边缘缓存，Service Worker 照常工作。`docs/00` 的架构图本来就是这个形状。
+本路径里 `apps/` 的 `CDN_ASSET_PREFIX` 留空、产物走同源，是因为**这一层边缘 nginx 带 `ngx_brotli`，
+能把构建期压好的 Brotli 11 产物原样直发**（CDN 只能现压，档位更低）。配套做法是
+**`duanju66.cc` 整体挂到 Cloudflare 代理（橙云）后面**，`/_app/immutable/*` 在同源地址上被边缘缓存。
+`docs/00` 的架构图就是这个形状。
 
 这条路线要做三件事：
 
@@ -310,14 +314,14 @@ docker compose --env-file .env exec postgres psql -U postgres -d xsite
 | 资源还是 gzip、没有 Brotli | 先确认产物里有 `.br`（`docker compose exec nginx ls /srv/admin/current/assets \| grep -c .br`）；再看是不是哪个 location 误加了 `proxy_set_header Accept-Encoding ""`（apps 那条必须不清、feedback 那条必须清，原因见第 4 节） |
 | 限流把正常用户拦住 / 日志里 IP 全一样 | 站点在 Cloudflare 后面但 `EDGE_TRUST_CLOUDFLARE` 不是 1 |
 | 后台登录后立刻掉登录态 | `ADMIN_ORIGINS` 和实际域名不一致（必须 `https://`，production 只允许 https） |
-| 生产环境封面或视频出不来 | `IMAGE_BASE_URLS` / `MEDIA_CONNECT_ORIGINS` 没跟着后台线路表更新，被 CSP 拦了 |
+| 生产环境封面或视频出不来 | 先看 `GET /api/v1/site-config` 的 `media` 段（域名池随后台线路表下发，契约 0.77.0）：空的就是后台没配线路或线路都停用了，后台「存储设置」顶部的交付自检会说原因。有值还不出来，再查域名的 CORS 头，以及后台手填的完整封面 / Logo 地址有没有登记进 `IMAGE_BASE_URLS` |
 | 后台资源预热进度条不动 | SSE 被缓冲；确认 `/api/admin/` 的 `proxy_buffering off` 还在 |
 
 ## 7. 已知未做
 
 - **多 CDN 与 GSLB**（`docs/11` X5-1）：现在是单边缘单机 + Cloudflare 一家，没有多家 CDN 调度、没有回源 mTLS、没有源站安全组只放行 CDN。
 - **HTTP/3 只验到配置层**：`http3 on`、`listen 443 quic` 都在运行中的配置里，容器也在 UDP 443 上监听，`Alt-Svc` 正常下发；但本机没有带 HTTP/3 的 arm64 curl，真实 QUIC 握手没有端到端实测过。上线后用浏览器开发者工具看协议列是不是 `h3` 即可确认。
-- **apps 的 Service Worker 与独立 CDN 域名互斥**：现在走反向代理型 CDN 绕开了这个限制。将来真要换独立资源域名，除了去掉 Service Worker，还要改 `apps/src/service-worker/index.ts` 里按同源 `/_app/immutable/` 预缓存的 `assetPattern`（feedback 的 `public/sw.js` 已经按跨源 CDN 改好了，可以照着做）。
+- **apps 在本路径上仍走同源产物**（见第 4 节）。「Service Worker 与独立 CDN 域名互斥」这条限制已经解掉了：SW 移到 `apps/src/sw/` 由 `apps/scripts/build-sw.ts` 编译，资源缓存也已支持跨源（`basic` 或 `cors`）。要在本路径上改成独立资源域名，只需给 `apps` 的构建传 `CDN_ASSET_PREFIX` 并把产物同步到那个前缀，代价是失去边缘层的 Brotli 11 直发。
 - **多实例与蓝绿**：`service` / `apps` / `feedback` 都是单副本，`docker compose up -d` 会有秒级中断。要无缝发布得先上多副本 + 真正的负载均衡。
 - **托管数据库**：`compose.yaml` 里自带 postgres 与 valkey，适合单机起步。换托管实例只要改三个连接串（线上必须 `sslmode=verify-full` 与 `rediss://`），其余不动。
 - **备份**：没有自动备份。PostgreSQL 的连续归档与定期全量要按 `docs/09` 单独配。

@@ -364,6 +364,7 @@ type Querier interface {
 	// 播放服务的查询（docs/03 第 4 节）：选源（S1-7）、清单与密钥（S1-8）。
 	// 选源与清单：剧前台可见（不在回收站、已上架、定时已到点，与 S1-4 的可见性一致）且分集已转封装完成才返回，否则视为不存在。
 	// video_object_id 是当前产物，选线据此只挑已有就绪副本的存储源（S1-6f）；object_key 是产物目录，清单接口据此读清单原文、拼切片地址。
+	// duration_sec 是整集时长，前台据此把进度条显示为整集长度；试看时清单只含前 trial_sec 秒，可播区间到此为止、其余为锁定段。
 	GetPlayableEpisode(ctx context.Context, id int64) (GetPlayableEpisodeRow, error)
 	// ---------- 频道与标签 ----------
 	// 频道是设为频道的取值，slug 全站唯一；停用的取值或停用维度下的取值前台 404。
@@ -465,6 +466,8 @@ type Querier interface {
 	InsertDramaTags(ctx context.Context, arg InsertDramaTagsParams) error
 	InsertDramaTerms(ctx context.Context, arg InsertDramaTermsParams) error
 	// 埋点采集（docs/03 第 8.1 节，S4-1）：批量 COPY 进 event_raw 分区表。
+	// 汇总（metric_*，复杂聚合 + ON CONFLICT）与分区维护（动态 DDL）sqlc 不支持，
+	// 手写在 store/pg/analytics.go（参数化 pool.Exec），不经 sqlc。
 	InsertEvents(ctx context.Context, arg []InsertEventsParams) (int64, error)
 	InsertMediaKey(ctx context.Context, arg InsertMediaKeyParams) error
 	InsertMediaObject(ctx context.Context, arg InsertMediaObjectParams) (int64, error)
@@ -618,6 +621,10 @@ type Querier interface {
 	// 一个对象的全部副本
 	ListMediaReplicas(ctx context.Context, objectID int64) ([]MediaReplica, error)
 	ListMenus(ctx context.Context) ([]ListMenusRow, error)
+	// 看板读查询（S4-3）：只读预聚合表，纯 SELECT，sqlc 支持。
+	// 剧集分析列表要「按不同指标排序 + 分页」，ORDER BY 列无法参数化，手写在 store/pg/analytics.go。
+	// 某日期区间（北京时间日）的全站日汇总，升序。供看板窗口汇总、环比与每日序列。
+	ListMetricDaily(ctx context.Context, arg ListMetricDailyParams) ([]ListMetricDailyRow, error)
 	// ---------- 评论审核列表 ----------
 	// 筛选：状态（空串不筛）、只看被举报（reported=true 时要求存在举报）、Q 搜内容或用户名（ILIKE，模式已转义）。
 	// 只看含屏蔽词在服务层扫描（matcher 在进程内），这里不处理。已软删的评论不在审核范围。

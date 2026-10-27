@@ -10,6 +10,7 @@ import { Badge, Button, Input } from '@/components/ui'
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form'
 import { LoadError, PageHeading, WithReason } from '@/features/access/shared'
 import { SelectField, SwitchField, TextField } from '@/features/content/components/fields'
+import { ImageRefField, ImageThumb } from '@/features/media/image-preview'
 import {
   brandingApi,
   brandingConfigQuery,
@@ -117,7 +118,7 @@ function BrandSection({ brand, disabledReason }: { brand: Brand; disabledReason:
       <TextField control={form.control} name='copyright' label='版权文字' placeholder='选填，显示在页脚，如 © 2026 短剧站' disabled={!editable} />
       <div className='grid gap-4 sm:grid-cols-2'>
         <TextField control={form.control} name='support_url' label='客服链接' placeholder='选填，如 https://t.me/support' disabled={!editable} />
-        <TextField
+        <ImageRefField
           control={form.control}
           name='logo_light'
           label='头部 Logo'
@@ -125,7 +126,14 @@ function BrandSection({ brand, disabledReason }: { brand: Brand; disabledReason:
           description={IMAGE_KEY_HINT + '；留空显示站名文字'}
           disabled={!editable}
         />
-        <TextField control={form.control} name='favicon' label='favicon' placeholder='选填，如 img/favicon.png' disabled={!editable} />
+        <ImageRefField
+          control={form.control}
+          name='favicon'
+          label='favicon'
+          placeholder='选填，如 img/favicon.png'
+          disabled={!editable}
+          thumbClassName='size-8 object-contain'
+        />
       </div>
     </Section>
   )
@@ -407,9 +415,8 @@ function Preview({ config }: { config: BrandingConfig }) {
         >
           <div className={`flex items-center gap-2 ${header === 'centered' ? '' : 'me-auto'}`}>
             {brand.logo_light ? (
-              <span className='rounded px-1.5 py-0.5 text-[10px]' style={{ background: c.primary, color: '#fff' }}>
-                LOGO
-              </span>
+              // 预览里放真图而不是「LOGO」色块：运营改完 Logo 要能当场看出前台会变成什么样
+              <ImageThumb value={brand.logo_light} alt='头部 Logo' className='h-4 w-auto max-w-16 border-0 bg-transparent object-contain' zoomable={false} />
             ) : (
               <span className='font-semibold'>{brand.site_name || '站名'}</span>
             )}

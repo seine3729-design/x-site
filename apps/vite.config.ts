@@ -53,11 +53,12 @@ export default defineConfig({
 			env: {
 				dir: 'config/vite-env'
 			},
+			// 带内容哈希的产物走 CDN 绝对地址。Service Worker 刻意不放在 src/service-worker/：
+			// SvelteKit 只要扫到自己管的 SW 入口、而 paths.assets 又非空就直接构建失败
+			// （service_worker_assets）。它现在在 src/sw/，由 scripts/build-sw.ts 编译，
+			// 所以这里也不需要 serviceWorker 配置项了。
 			paths: {
 				assets: assetPrefix()
-			},
-			serviceWorker: {
-				register: false
 			},
 			// 小于这个长度的样式直接写进 HTML，首屏不用再等一次样式请求。
 			inlineStyleThreshold: 12_000,

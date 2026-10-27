@@ -371,6 +371,105 @@
 		text-shadow: none;
 	}
 
+	/* 会员页与个人中心会员入口：仅使用语义令牌，后台切换配色与圆角后会同步生效。 */
+	.vip-hero {
+		@apply relative overflow-hidden rounded-panel border border-line bg-surface px-5 py-8 text-center sm:px-8 sm:py-10;
+		box-shadow: var(--shadow-pop);
+	}
+	.vip-hero-glow {
+		background: radial-gradient(60% 100% at 50% 0%, var(--vip), transparent 72%);
+		opacity: 0.18;
+	}
+	.vip-crown,
+	.vip-membership-banner-icon,
+	.vip-status-icon,
+	.vip-payment-icon {
+		@apply grid shrink-0 place-items-center text-on-vip;
+		background-image: linear-gradient(to bottom right, var(--vip), var(--vip));
+		background-image: linear-gradient(to bottom right, color-mix(in oklab, var(--vip), #ffffff 32%), var(--vip));
+	}
+	.vip-crown {
+		@apply mx-auto size-16 rounded-panel;
+		box-shadow: var(--shadow-pop);
+	}
+	.vip-status {
+		@apply mx-auto mt-6 flex max-w-xl items-center gap-3 rounded-card border border-line bg-raised px-4 py-3;
+	}
+	.vip-status[data-active='true'] {
+		background-color: var(--raised);
+		background-color: color-mix(in oklab, var(--vip) 13%, var(--surface));
+		border-color: var(--line-strong);
+		border-color: color-mix(in oklab, var(--vip) 44%, var(--line-strong));
+	}
+	.vip-status-icon,
+	.vip-payment-icon {
+		@apply size-10 rounded-card;
+	}
+	.vip-perk {
+		@apply rounded-card border border-line bg-surface p-4;
+	}
+	.vip-plan {
+		@apply relative flex min-h-52 w-full flex-col overflow-hidden rounded-panel border border-line bg-surface p-5 text-start transition-[background-color,border-color,box-shadow,transform] duration-200;
+	}
+	.vip-plan[data-interactive='true']:not(:disabled) {
+		cursor: pointer;
+		touch-action: manipulation;
+	}
+	.vip-plan[data-interactive='true']:not(:disabled):hover {
+		@apply border-line-strong bg-raised;
+		transform: translateY(-2px);
+	}
+	.vip-plan[data-recommended='true'] {
+		border-color: var(--line-strong);
+		border-color: color-mix(in oklab, var(--vip) 54%, var(--line-strong));
+	}
+	.vip-plan[data-selected='true'] {
+		background-color: var(--raised);
+		background-color: color-mix(in oklab, var(--vip) 12%, var(--surface));
+		border-color: var(--vip);
+		box-shadow: var(--shadow-pop);
+	}
+	.vip-plan:disabled {
+		cursor: default;
+	}
+	.vip-plan-name {
+		@apply text-base font-bold;
+	}
+	.vip-plan-price {
+		/* @apply 只能引用 Tailwind 工具类，不能引用本层自己定义的 .tabular（整份 CSS 会编译失败） */
+		@apply text-3xl font-extrabold tabular-nums;
+	}
+	.vip-plan-action {
+		@apply flex min-h-11 items-center gap-2 text-sm font-semibold text-vip-fg;
+	}
+	.vip-payment {
+		@apply rounded-panel border border-line bg-surface p-5;
+		box-shadow: var(--shadow-pop);
+	}
+	.vip-payment-actions {
+		@apply flex flex-wrap items-center gap-3;
+	}
+	.vip-notice {
+		@apply mx-auto mt-7 flex max-w-3xl items-start justify-center gap-2 rounded-card border border-line bg-surface px-4 py-3 text-center text-xs leading-5 text-fg-subtle;
+	}
+	.vip-membership-banner {
+		@apply flex items-center gap-3 rounded-panel border border-line bg-surface p-4 transition-[background-color,border-color,box-shadow] duration-150 hover:border-line-strong hover:bg-raised;
+	}
+	.vip-membership-banner-icon {
+		@apply size-10 rounded-card;
+	}
+	.vip-membership-banner-description {
+		@apply block truncate text-xs text-fg-muted;
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.vip-plan {
+			transition: none;
+		}
+		.vip-plan[data-interactive='true']:not(:disabled):hover {
+			transform: none;
+		}
+	}
+
 	.text-balance {
 		text-wrap: balance;
 	}

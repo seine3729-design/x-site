@@ -64,6 +64,10 @@ x-service-env: &service-env
 
   MEDIA_ORPHAN_RETENTION: ${MEDIA_ORPHAN_RETENTION:-720h}
   MEDIA_CLEANUP_INTERVAL: ${MEDIA_CLEANUP_INTERVAL:-24h}
+  # 后台图片优化（docs/03 第 9.6a 节）。刻意用 :- 而不是 :?：留空只是让后台退回浏览器本地压缩，
+  # 不该因为缺一个第三方 Key 就起不了服务。Key 只到 service，不进任何前端产物。
+  IMAGE_TINIFY_API_KEY: ${IMAGE_TINIFY_API_KEY:-}
+  IMAGE_MAX_SIDE: ${IMAGE_MAX_SIDE:-2400}
   GEOIP_XDB_PATH: ${GEOIP_XDB_PATH:-/data/geoip/ip2region.xdb}
   GEOIP_RELOAD_INTERVAL: ${GEOIP_RELOAD_INTERVAL:-10m}
 
@@ -215,8 +219,10 @@ services:
       EDGE_SHARED_SECRET: ${EDGE_SHARED_SECRET}
       # BFF 的限流与会话计数用 Valkey 的 1 号库，和后端的 0 号库分开
       VALKEY_URL: ${APPS_VALKEY_URL:?必须设置 APPS_VALKEY_URL}
-      # 图片与视频线路域名池：生产环境 CSP 的 img-src / connect-src 从这里取，
-      # 后台线路表新增域名后必须同步这里，否则封面与视频在生产被 CSP 拦掉（apps/config/security-headers.ts）
+      # 图片与视频线路域名池的**补充**：主来源是后台存储线路表，随 /api/v1/site-config 的 media 段下发，
+      # CSP 按请求生成（契约 0.77.0），所以后台新增线路不用再改这里、也不用重启。
+      # 这里只需登记「不在线路表里的完整地址」——后台把 Logo / favicon / 封面填成 https://cdn.… 的那种，
+      # 不登记前台 CSP 会拦掉、图一张都不出（apps/config/security-headers.ts）
       IMAGE_BASE_URLS: ${IMAGE_BASE_URLS:-}
       MEDIA_CONNECT_ORIGINS: ${MEDIA_CONNECT_ORIGINS:-}
     depends_on:

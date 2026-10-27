@@ -30,6 +30,7 @@ import {
 import { Form } from '@/components/ui/form'
 import { LoadError, PageHeading, WithReason } from '@/features/access/shared'
 import { SelectField, TextField } from '@/features/content/components/fields'
+import { ImageThumb } from '@/features/media/image-preview'
 import { ImageUploadField } from '@/features/media/upload-field'
 import { FilterSelect, ResetButton, SearchBox } from '@/features/content/components/list-toolbar'
 import { Pager } from '@/features/content/components/pager'
@@ -142,12 +143,15 @@ export function ProjectsPage() {
                   <TableRow key={p.id}>
                     <TableCell className='pl-4 font-mono text-xs tabular-nums'>{p.key_prefix}</TableCell>
                     <TableCell>
-                      <div className='flex max-w-sm flex-col'>
-                        <span className='truncate font-medium'>{p.name}</span>
-                        <span className='truncate text-xs text-muted-foreground'>
-                          /{p.slug}
-                          {p.summary ? ` · ${p.summary}` : ''}
-                        </span>
+                      <div className='flex max-w-sm items-center gap-2'>
+                        <ImageThumb value={p.cover} alt={`${p.name}封面`} className='size-10' />
+                        <div className='flex min-w-0 flex-col'>
+                          <span className='truncate font-medium'>{p.name}</span>
+                          <span className='truncate text-xs text-muted-foreground'>
+                            /{p.slug}
+                            {p.summary ? ` · ${p.summary}` : ''}
+                          </span>
+                        </div>
                       </div>
                     </TableCell>
                     <TableCell>
@@ -272,7 +276,7 @@ function ProjectDialog({ project, editable, onClose }: { project: FbProject | nu
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className='max-h-[90vh] overflow-y-auto sm:max-w-2xl'>
+      <DialogContent className='sm:max-w-2xl'>
         <DialogHeader>
           <DialogTitle>{project ? `编辑「${project.name}」` : '新建内测项目'}</DialogTitle>
           <DialogDescription>编号前缀决定反馈的展示编号（如 APP-1024）。项目标识用于前台地址，上线后改动会影响已分享的链接。</DialogDescription>
@@ -421,7 +425,7 @@ function MembersDialog({ project, editable, onClose }: { project: FbProject; edi
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className='max-h-[90vh] overflow-y-auto sm:max-w-2xl'>
+      <DialogContent className='sm:max-w-2xl'>
         <DialogHeader>
           <DialogTitle>「{project.name}」的成员</DialogTitle>
           <DialogDescription>测试成员之外的角色属于项目团队，可以看到仅成员内容与私密反馈。</DialogDescription>

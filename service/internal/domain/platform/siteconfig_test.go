@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -63,7 +64,7 @@ func newFixture() (*SiteConfigService, *fakeSiteRepo, *fakeCache, *fakePublisher
 	repo := &fakeSiteRepo{cfg: SiteConfig{Version: 1, Site: json.RawMessage(`{"site_name":"x"}`)}}
 	cache := &fakeCache{}
 	pub := &fakePublisher{}
-	svc := NewSiteConfigService(repo, cache, pub)
+	svc := NewSiteConfigService(repo, cache, pub, nil)
 	return svc, repo, cache, pub
 }
 
@@ -182,5 +183,74 @@ func TestSiteConfig_OnInvalidateClearsLocal(t *testing.T) {
 	}
 	if repo.gets != 2 {
 		t.Fatalf("本地缓存被清后应回源，实际 gets=%d", repo.gets)
+	}
+}
+
+// fakeMedia 是线路域名池读取器的存根（真实实现是 domain/storage.PoolService）。
+type fakeMedia struct {
+	pool MediaDomains
+	err  error
+	gets int
+}
+
+func (m *fakeMedia) MediaDomains(context.Context) (MediaDomains, error) {
+	m.gets++
+	return m.pool, m.err
+}
+
+// 域名池随站点配置下发（docs/04 F）：前台用它拼封面的相对 key，并按请求生成 CSP。
+func TestSiteConfig_CarriesMediaDomains(t *testing.T) {
+	repo := &fakeSiteRepo{cfg: SiteConfig{Version: 1, Site: json.RawMessage(`{}`)}}
+	media := &fakeMedia{pool: MediaDomains{
+		ImageBases:   []string{"https://img.example/x"},
+		VideoOrigins: []string{"https://v.example"},
+	}}
+	svc := NewSiteConfigService(repo, &fakeCache{}, &fakePublisher{}, media)
+
+	cfg, err := svc.Get(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Media.ImageBases) != 1 || cfg.Media.ImageBases[0] != "https://img.example/x" {
+		t.Fatalf("图片前缀 = %v", cfg.Media.ImageBases)
+	}
+	if len(cfg.Media.VideoOrigins) != 1 || cfg.Media.VideoOrigins[0] != "https://v.example" {
+		t.Fatalf("视频域名 = %v", cfg.Media.VideoOrigins)
+	}
+	// 域名池和配置各段一起进缓存：命中一级缓存时不应再读线路表
+	if _, err := svc.Get(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if media.gets != 1 {
+		t.Fatalf("读线路表 %d 次，期望 1 次（应随配置一起缓存）", media.gets)
+	}
+}
+
+// 未注入读取器时给空数组：JSON 里不能是 null，否则客户端在 .map() 上直接崩。
+func TestSiteConfig_MediaDomainsEmptyArrays(t *testing.T) {
+	svc, _, _, _ := newFixture()
+	cfg, err := svc.Get(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Media.ImageBases == nil || cfg.Media.VideoOrigins == nil {
+		t.Fatalf("域名池不能是 null：%+v", cfg.Media)
+	}
+	b, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"media":{"image_bases":[],"video_origins":[]}`) {
+		t.Fatalf("下发的 media 段不对：%s", b)
+	}
+}
+
+// 读线路表失败要透出错误，而不是静默下发空池：空池会让前台一张封面都不显示，页面上却看不出异常。
+func TestSiteConfig_MediaDomainsErrorFailsRead(t *testing.T) {
+	want := errors.New("连接中断")
+	repo := &fakeSiteRepo{cfg: SiteConfig{Version: 1, Site: json.RawMessage(`{}`)}}
+	svc := NewSiteConfigService(repo, &fakeCache{}, &fakePublisher{}, &fakeMedia{err: want})
+	if _, err := svc.Get(context.Background()); !errors.Is(err, want) {
+		t.Fatalf("err = %v，期望 %v", err, want)
 	}
 }

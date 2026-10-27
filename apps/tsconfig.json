@@ -5,5 +5,5 @@
 		"types": ["$app/types", "node"]
 	},
 	"include": ["src", "vite.config.ts", "vitest.config.ts", "config"],
-	"exclude": ["src/service-worker"]
+	"exclude": ["src/sw"]
 }

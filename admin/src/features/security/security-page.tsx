@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { KeyRound, ShieldAlert } from 'lucide-react'
 import { useCan } from '@/stores/auth-store'
+import { DatePicker } from '@/components/date-picker'
 import { NoPermission } from '@/components/module-placeholder'
 import {
   Badge,
@@ -131,25 +132,33 @@ function LoginLogsTab() {
           />
         </div>
         <div className='flex flex-col gap-1'>
-          <span className='text-xs text-muted-foreground'>起</span>
-          <Input
-            type='date'
-            className='h-9'
+          <label htmlFor='sec-from' className='text-xs text-muted-foreground'>
+            起
+          </label>
+          <DatePicker
+            id='sec-from'
+            className='h-9 w-36'
+            placeholder='开始日期'
+            max={to || undefined}
             value={from}
-            onChange={(e) => {
-              setFrom(e.target.value)
+            onChange={(v) => {
+              setFrom(v)
               setPage(1)
             }}
           />
         </div>
         <div className='flex flex-col gap-1'>
-          <span className='text-xs text-muted-foreground'>止</span>
-          <Input
-            type='date'
-            className='h-9'
+          <label htmlFor='sec-to' className='text-xs text-muted-foreground'>
+            止
+          </label>
+          <DatePicker
+            id='sec-to'
+            className='h-9 w-36'
+            placeholder='结束日期'
+            min={from || undefined}
             value={to}
-            onChange={(e) => {
-              setTo(e.target.value)
+            onChange={(v) => {
+              setTo(v)
               setPage(1)
             }}
           />

@@ -17,6 +17,7 @@ import (
 
 	"xsite/service/internal/app"
 	"xsite/service/internal/config"
+	"xsite/service/internal/domain/analytics"
 	"xsite/service/internal/domain/platform"
 	"xsite/service/internal/domain/resourcecheck"
 	"xsite/service/internal/domain/resourcewarm"
@@ -209,6 +210,10 @@ func run() error {
 	jobs.ConfigureMe(riverCfg, app.NewMeFlusher(pool, vk))
 	// 社区通知（S2-5）：评论被回复 / 被点赞后异步写站内信给注册用户作者
 	jobs.ConfigureCommunity(riverCfg, app.NewCommunityNotifier(pool))
+	// 看板汇总与事件分区维护（S4-2）：周期把 event_raw 聚合到 metric_*、滚动建未来分区并删过期分区
+	analyticsRollup := analytics.NewRollup(pg.NewAnalyticsRepo(pool))
+	jobs.ConfigureMetricsRollup(riverCfg, &jobs.MetricsRollupWorker{Svc: analyticsRollup}, 0)
+	jobs.ConfigureEventPartition(riverCfg, &jobs.EventPartitionWorker{Svc: analyticsRollup}, 0)
 	client, err := river.NewClient(driver, riverCfg)
 	if err != nil {
 		return err

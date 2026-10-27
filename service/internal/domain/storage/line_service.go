@@ -24,14 +24,17 @@ type LineSigner interface {
 
 // LineService 是线路与地区规则的后台规则。
 type LineService struct {
-	repo   Repo
-	prober LineProber
-	policy Policy
-	signer LineSigner
+	repo    Repo
+	prober  LineProber
+	policy  Policy
+	signer  LineSigner
+	version VersionBumper
 }
 
-func NewLineService(repo Repo, prober LineProber, policy Policy, signer LineSigner) *LineService {
-	return &LineService{repo: repo, prober: prober, policy: policy, signer: signer}
+// NewLineService 装配线路后台规则。version 令站点配置版本 +1（线路域名池随站点配置下发，
+// 见 domainpool.go），可为 nil：一次性脚本与测试不需要，代价是前台等一个缓存 TTL 才看到新域名。
+func NewLineService(repo Repo, prober LineProber, policy Policy, signer LineSigner, version VersionBumper) *LineService {
+	return &LineService{repo: repo, prober: prober, policy: policy, signer: signer, version: version}
 }
 
 // ListLines 返回线路列表（含地区规则），按存储源、优先级倒序。
@@ -95,7 +98,12 @@ func (s *LineService) CreateLine(ctx context.Context, in LineInput) (Line, error
 	if !purposeAllowsKind(provider.Purpose, in.Kind) {
 		return Line{}, badRequest("该存储源用途为「%s」，不能挂 %s 线路", provider.Purpose, in.Kind)
 	}
-	return s.repo.CreateLine(ctx, in)
+	line, err := s.repo.CreateLine(ctx, in)
+	if err != nil {
+		return Line{}, err
+	}
+	bumpSiteVersion(ctx, s.version)
+	return line, nil
 }
 
 // UpdateLine 整体保存线路（不改所属存储源），返回修改前后的记录（均含规则）。
@@ -113,6 +121,7 @@ func (s *LineService) UpdateLine(ctx context.Context, id int64, in LineInput) (b
 		return Line{}, Line{}, err
 	}
 	after.Rules = before.Rules
+	bumpSiteVersion(ctx, s.version)
 	return before, after, nil
 }
 
@@ -125,6 +134,7 @@ func (s *LineService) DeleteLine(ctx context.Context, id int64) (Line, error) {
 	if _, err := s.repo.DeleteLine(ctx, id); err != nil {
 		return Line{}, err
 	}
+	bumpSiteVersion(ctx, s.version)
 	return before, nil
 }
 
@@ -144,7 +154,13 @@ func (s *LineService) SetRules(ctx context.Context, lineID int64, in []RuleInput
 		}
 		cleaned[i] = c
 	}
-	return s.repo.ReplaceLineRules(ctx, lineID, cleaned)
+	rules, err := s.repo.ReplaceLineRules(ctx, lineID, cleaned)
+	if err != nil {
+		return nil, err
+	}
+	// 地区规则不改域名，但会改「这条线路对哪些地区生效」，同样是随站点配置下发的内容的一部分。
+	bumpSiteVersion(ctx, s.version)
+	return rules, nil
 }
 
 // TestLine 测试线路：对 base_url + probe_path 发起 HTTP 探测，并自检签名配置是否可用（docs/12 第 3.3、8.2 节）。

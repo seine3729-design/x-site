@@ -115,7 +115,7 @@ func newFixture(t *testing.T) fixture {
 		t.Fatal(err)
 	}
 	repo := fakeRepo{episodes: map[int64]Episode{
-		1: {ID: 1, DramaID: 9, Access: content.AccessFree, VideoObjectID: 501},
+		1: {ID: 1, DramaID: 9, Access: content.AccessFree, DurationSec: 272, VideoObjectID: 501},
 		2: {ID: 2, DramaID: 9, Access: content.AccessLogin, TrialSec: 45},
 		3: {ID: 3, DramaID: 9, Access: content.AccessVIP, TrialSec: 30},
 		4: {ID: 4, DramaID: 9, Access: content.AccessVIP},
@@ -162,6 +162,10 @@ func TestSources_FreeEpisode(t *testing.T) {
 	}
 	if got.EpisodeID != 1 || got.Access != content.AccessFree || got.TrialSec != 0 || got.Region != "CN-广东-电信" {
 		t.Fatalf("选源结果不对：%+v", got)
+	}
+	// 选源要带整集时长（前台进度条显示整集长度；试看时可播区间只到 trial_sec，其余锁定）
+	if got.DurationSec != 272 {
+		t.Fatalf("选源应返回整集时长 272，得到 %d", got.DurationSec)
 	}
 	if len(got.Lines) != 2 || got.Lines[0].LineID != 12 || !got.Lines[0].Recommended || got.Lines[1].LineID != 7 {
 		t.Fatalf("线路应按选线结果的顺序返回：%+v", got.Lines)

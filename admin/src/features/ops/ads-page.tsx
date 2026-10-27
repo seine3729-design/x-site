@@ -29,6 +29,7 @@ import {
 import { Form } from '@/components/ui/form'
 import { LoadError, PageHeading, WithReason } from '@/features/access/shared'
 import { SelectField, TextField } from '@/features/content/components/fields'
+import { ImageThumb } from '@/features/media/image-preview'
 import { ImageUploadField, VideoUploadField } from '@/features/media/upload-field'
 import { FilterSelect, ResetButton, SearchBox } from '@/features/content/components/list-toolbar'
 import { Pager } from '@/features/content/components/pager'
@@ -189,9 +190,13 @@ export function AdsPage() {
                       </TableCell>
                       <TableCell className='text-sm whitespace-nowrap'>{AD_SLOT_LABELS[a.slot]}</TableCell>
                       <TableCell>
-                        <div className='flex max-w-56 flex-col items-start gap-1'>
-                          <Badge variant='outline'>{CREATIVE_LABELS[a.creative_type]}</Badge>
-                          <span className='line-clamp-2 text-xs break-all text-muted-foreground'>{creativeSummary(a)}</span>
+                        <div className='flex max-w-64 items-start gap-2'>
+                          {/* image 字段同时承载图片素材与视频广告的封面，有值就给缩略图 */}
+                          {a.image && <ImageThumb value={a.image} alt={`${a.name}素材`} className='h-10 w-16' />}
+                          <div className='flex min-w-0 flex-col items-start gap-1'>
+                            <Badge variant='outline'>{CREATIVE_LABELS[a.creative_type]}</Badge>
+                            <span className='line-clamp-2 text-xs break-all text-muted-foreground'>{creativeSummary(a)}</span>
+                          </div>
                         </div>
                       </TableCell>
                       <TableCell className='text-sm'>
@@ -364,7 +369,7 @@ function AdDialog({ item, canHTML, onClose }: { item?: Ad; canHTML: boolean; onC
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className='max-h-[90vh] overflow-y-auto sm:max-w-2xl'>
+      <DialogContent className='sm:max-w-2xl'>
         <DialogHeader>
           <DialogTitle>{creating ? '新建广告' : `编辑广告 #${item.id}`}</DialogTitle>
           <DialogDescription>图片在上传前自动压缩为 WebP；视频上传后自动转为 HLS m3u8。</DialogDescription>

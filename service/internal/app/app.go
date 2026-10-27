@@ -27,6 +27,7 @@ import (
 	"xsite/service/internal/domain/contentimport"
 	"xsite/service/internal/domain/domains"
 	"xsite/service/internal/domain/feedback"
+	"xsite/service/internal/domain/finance"
 	"xsite/service/internal/domain/identity"
 	"xsite/service/internal/domain/media"
 	"xsite/service/internal/domain/moderation"
@@ -43,11 +44,13 @@ import (
 	"xsite/service/internal/geoip"
 	apphttp "xsite/service/internal/http"
 	adminhttp "xsite/service/internal/http/admin"
+	adminanalyticshttp "xsite/service/internal/http/admin/analytics"
 	adminbillinghttp "xsite/service/internal/http/admin/billing"
 	admincommunityhttp "xsite/service/internal/http/admin/community"
 	contenthttp "xsite/service/internal/http/admin/content"
 	admindomainshttp "xsite/service/internal/http/admin/domains"
 	adminfeedbackhttp "xsite/service/internal/http/admin/feedback"
+	adminfinancehttp "xsite/service/internal/http/admin/finance"
 	mediahttp "xsite/service/internal/http/admin/media"
 	adminopshttp "xsite/service/internal/http/admin/ops"
 	adminplatformhttp "xsite/service/internal/http/admin/platform"
@@ -71,6 +74,7 @@ import (
 	publicplayhttp "xsite/service/internal/http/public/play"
 	publicsitehttp "xsite/service/internal/http/public/site"
 	publicviphttp "xsite/service/internal/http/public/vip"
+	"xsite/service/internal/imageopt"
 	"xsite/service/internal/jobs"
 	"xsite/service/internal/netguard"
 	"xsite/service/internal/store/blob"
@@ -121,7 +125,10 @@ func NewAPI(ctx context.Context, cfg config.Config) (*API, error) {
 	// 缓存失效总线（S1-9）：配置变更后经 Valkey Pub/Sub 广播到所有实例，让各实例清掉进程内的本地缓存
 	invalidator := cache.NewInvalidator(vk, "xsite:invalidate")
 	siteConfigRepo := pg.NewSiteConfigRepo(pool)
-	siteSvc := platform.NewSiteConfigService(siteConfigRepo, store, invalidator)
+	// 存储仓储在这里就要建好：线路域名池随站点配置下发（docs/04 F），所以 siteSvc 依赖它。
+	// 装配顺序是 storageRepo → 域名池 → siteSvc → lineSvc（lineSvc 反过来用 siteSvc 刷新版本）。
+	storageRepo := pg.NewStorageRepo(pool)
+	siteSvc := platform.NewSiteConfigService(siteConfigRepo, store, invalidator, mediaDomains{storage.NewPoolService(storageRepo)})
 	// 缓存管理（S4-4）：只清白名单内的键前缀（domain/platform/cachekeys.go），
 	// 清「站点设置」走 siteSvc.BumpVersion 以便一次完成 version+1、清二级缓存与跨实例广播。
 	cacheSvc := platform.NewCacheService(cache.NewPurger(vk), siteSvc, siteConfigRepo)
@@ -222,7 +229,6 @@ func NewAPI(ctx context.Context, cfg config.Config) (*API, error) {
 		return nil, fmt.Errorf("STORAGE_KEKS: %w", err)
 	}
 	egress := netguard.Policy{AllowPrivate: cfg.EgressPrivateAllowed()}
-	storageRepo := pg.NewStorageRepo(pool)
 	storagePolicy := storage.Policy{HTTPSOnly: !cfg.IsDev(), Egress: egress}
 	storageHealth := cache.NewLineHealthStore(vk, "xsite:line:health:")
 	storageSvc := storage.NewService(storageRepo, storageKeyring, &s3probe.Prober{Egress: egress}, storagePolicy)
@@ -238,7 +244,8 @@ func NewAPI(ctx context.Context, cfg config.Config) (*API, error) {
 		return nil, fmt.Errorf("LINE_SIGN_KEYS: %w", err)
 	}
 	signSvc := storage.NewSignService(storageRepo, storageSvc, signKeyring, &s3probe.Presigner{Egress: egress}, nil)
-	lineSvc := storage.NewLineService(storageRepo, &s3probe.LineProber{Egress: egress}, storagePolicy, signSvc)
+	// 线路改动要令站点配置版本 +1：线路域名池随站点配置下发，不刷新的话前台的 CSP 与图片前缀会停在旧域名上。
+	lineSvc := storage.NewLineService(storageRepo, &s3probe.LineProber{Egress: egress}, storagePolicy, signSvc, siteSvc)
 	settingsSvc := storage.NewSettingsService(storageRepo)
 	// 健康分（S1-6d）：探测分由 worker 周期写入 storageHealth，客户端上报聚合在 storageQuality，
 	// 读取时按 40%/60% 融合，因此选线预览、用户端选线与健康看板三处分数同源。
@@ -372,6 +379,21 @@ func NewAPI(ctx context.Context, cfg config.Config) (*API, error) {
 		_, err := riverClient.InsertTx(ctx, tx, jobs.AdminVideoUploadArgs{UploadID: id.String()}, nil)
 		return err
 	}))
+	// 服务端图片优化（Tinify）：没配 API Key 时保持 nil 接口，后台优化接口回 503，浏览器退回本地 canvas 压缩。
+	var imageOpt adminuploadhttp.ImageOptimizer
+	if cfg.Image.OptimizeEnabled() {
+		optimizer, optErr := imageopt.New(imageopt.Options{
+			Endpoint: cfg.Image.TinifyEndpoint, APIKey: cfg.Image.TinifyAPIKey,
+			MaxSide: cfg.Image.MaxSide, Timeout: cfg.Image.OptimizeTimeout,
+		})
+		if optErr != nil {
+			_ = auditRec.Close(ctx)
+			vk.Close()
+			pool.Close()
+			return nil, fmt.Errorf("初始化图片优化服务: %w", optErr)
+		}
+		imageOpt = optimizer
+	}
 
 	// 反馈社区（feedback/docs/adr/0008）：与短剧业务同库不同表（fb_ 前缀），复用同一套会话、审计与 RBAC 基础设施。
 	// 社区用户会话走 Valkey 独立键前缀；令牌由 H5 前台服务端以 Authorization: Bearer 转发，不用 Cookie。
@@ -408,8 +430,13 @@ func NewAPI(ctx context.Context, cfg config.Config) (*API, error) {
 	// 安全中心（A4-4，docs/06 第 39 节，只读）：登录记录读 admin_login_log；
 	// 密钥轮换记录从各密钥环境变量收集版本号（只取 kid、不含密钥本身）；风控概览的实时计数源待接入。
 	securitySvc := domainsecurity.NewService(pg.NewSecurityRepo(pool), collectKeyVersions(cfg))
-	// 埋点采集（S4-1，docs/03 第 8.1 节）：批量 COPY 进 event_raw 分区表，汇总与看板接口随 S4-2/S4-3。
-	eventSvc := analytics.NewService(pg.NewAnalyticsRepo(pool))
+	// 埋点采集（S4-1，docs/03 第 8.1 节）：批量 COPY 进 event_raw 分区表。
+	// 看板 / 剧集分析读服务（S4-3）：只读 S4-2 的 metric_* 预聚合表。两者共用一个 repo。
+	analyticsRepo := pg.NewAnalyticsRepo(pool)
+	eventSvc := analytics.NewService(analyticsRepo)
+	analyticsQuerySvc := analytics.NewQueryService(analyticsRepo)
+	// 收入与成本（A4-1，docs/06 第 23 节）：按月手填收支 + 从已支付订单汇总会员收入。
+	financeSvc := finance.NewService(pg.NewFinanceRepo(pool))
 
 	router, err := apphttp.NewRouter(apphttp.Options{
 		Dev:            cfg.IsDev(),
@@ -453,10 +480,11 @@ func NewAPI(ctx context.Context, cfg config.Config) (*API, error) {
 		// 选源（S1-7）：选源桶每设备每分钟 60 次（S0-7 接入通用限流前用固定窗口计数）；
 		// 清单与密钥（S1-8）：只收加密请求，密钥桶每设备每集每分钟 20 次
 		PublicPlay: &publicplayhttp.Handlers{
-			Svc: playSvc, HLS: hlsSvc, Dev: cfg.IsDev(),
+			Svc: playSvc, HLS: hlsSvc, Dev: cfg.IsDev(), Resolver: identitySvc,
 			Limiter:    cache.NewCounter(vk, "xsite:play:sources:"),
 			KeyLimiter: cache.NewCounter(vk, "xsite:play:key:"),
 		},
+
 		// 用户端身份：游客签发 / 刷新 / 登出（S1-10）与注册 / 登录（S2-1）。游客与注册各自按 IP 前缀限流（前缀不同）
 		PublicAuth: &publicauthhttp.Handlers{
 			Svc:             identitySvc,
@@ -487,7 +515,7 @@ func NewAPI(ctx context.Context, cfg config.Config) (*API, error) {
 		Media: &mediahttp.Handlers{Svc: mediaSvc, PreviewSvc: episodePreviewSvc, PreviewHLS: episodePreviewHLS},
 		Uploads: &adminuploadhttp.Handlers{
 			Svc: adminUploadSvc, Media: mediaSvc, Stores: uploadStores,
-			Source: stageStore.Bucket(cfg.Media.SourceBucket),
+			Source: stageStore.Bucket(cfg.Media.SourceBucket), Images: imageOpt,
 		},
 		Feedback: &adminfeedbackhttp.Handlers{Svc: fbManage, Topics: fbTopics, Keys: fbIntake},
 		PublicFeedback: &publicfeedbackhttp.Handlers{
@@ -522,6 +550,8 @@ func NewAPI(ctx context.Context, cfg config.Config) (*API, error) {
 		},
 		Domains:      &admindomainshttp.Handlers{Svc: domainSvc},
 		Security:     &adminsecurityhttp.Handlers{Svc: securitySvc},
+		Analytics:    &adminanalyticshttp.Handlers{Svc: analyticsQuerySvc},
+		Finance:      &adminfinancehttp.Handlers{Svc: financeSvc},
 		PublicSite:   &publicsitehttp.Handlers{Pages: siteSvcs.pages, Home: siteSvcs.blocks},
 		AdminOrigins: cfg.AdminOrigins,
 		Audit:        auditRec,

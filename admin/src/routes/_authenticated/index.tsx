@@ -1,11 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { pages } from '@/config/navigation'
-import { PlaceholderFor } from '@/components/page-for'
+import { DashboardPage } from '@/features/analytics/dashboard-page'
 
 export const Route = createFileRoute('/_authenticated/')({
-  component: Dashboard,
+  component: DashboardPage,
 })
-
-function Dashboard() {
-  return <PlaceholderFor page={pages[0]} />
-}

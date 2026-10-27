@@ -5,6 +5,7 @@ import { CircleCheck, Link2, Link2Off, ShieldAlert, ShieldCheck, Unlink } from '
 import { toast } from 'sonner'
 import { errorMessage } from '@/lib/http'
 import { useCan } from '@/stores/auth-store'
+import { DatePicker } from '@/components/date-picker'
 import { NoPermission } from '@/components/module-placeholder'
 import {
   Badge,
@@ -15,7 +16,6 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  Input,
   Table,
   TableBody,
   TableCell,
@@ -126,22 +126,24 @@ export function AuditPage() {
           <label htmlFor='audit-from' className='text-sm text-muted-foreground'>
             从
           </label>
-          <Input
+          <DatePicker
             id='audit-from'
-            type='date'
             className='h-9 w-36'
+            placeholder='开始日期'
+            max={search.to || undefined}
             value={search.from ?? ''}
-            onChange={(e) => void navigate({ search: (prev) => withFilter(prev, { from: e.target.value || undefined }) })}
+            onChange={(v) => void navigate({ search: (prev) => withFilter(prev, { from: v || undefined }) })}
           />
           <label htmlFor='audit-to' className='text-sm text-muted-foreground'>
             到
           </label>
-          <Input
+          <DatePicker
             id='audit-to'
-            type='date'
             className='h-9 w-36'
+            placeholder='结束日期'
+            min={search.from || undefined}
             value={search.to ?? ''}
-            onChange={(e) => void navigate({ search: (prev) => withFilter(prev, { to: e.target.value || undefined }) })}
+            onChange={(v) => void navigate({ search: (prev) => withFilter(prev, { to: v || undefined }) })}
           />
         </div>
         <ResetButton disabled={!filtered} onClick={() => void navigate({ search: {} })} />

@@ -72,22 +72,26 @@ describe('transcodeProgressText', () => {
 
 describe('compressionSummary', () => {
   it('给出压缩前后大小与节省比例', () => {
-    expect(compressionSummary(2 * 1024 * 1024, 512 * 1024, false)).toBe('原图 2.0 MiB → WebP 512.0 KiB（省 75%）')
+    expect(compressionSummary(2 * 1024 * 1024, 512 * 1024, 'server')).toBe('原图 2.0 MiB → WebP 512.0 KiB（省 75%，服务端压缩）')
   })
 
   it('压完反而变大时如实说明（不假装省了）', () => {
-    expect(compressionSummary(100 * 1024, 120 * 1024, false)).toBe('原图 100.0 KiB → WebP 120.0 KiB（大 20%）')
+    expect(compressionSummary(100 * 1024, 120 * 1024, 'server')).toBe('原图 100.0 KiB → WebP 120.0 KiB（大 20%，服务端压缩）')
+  })
+
+  it('浏览器兜底压缩要标出来：画质明显更差，运营看到才知道去查优化服务', () => {
+    expect(compressionSummary(1024 * 1024, 512 * 1024, 'local')).toBe('原图 1.0 MiB → WebP 512.0 KiB（省 50%，浏览器兜底压缩）')
   })
 
   it('原图更优时说明按原文件上传、没有重新编码', () => {
-    const text = compressionSummary(300 * 1024, 300 * 1024, true)
+    const text = compressionSummary(300 * 1024, 300 * 1024, 'reused')
     expect(text).toContain('无损')
     expect(text).toContain('原文件')
     expect(text).not.toContain('→')
   })
 
   it('大小缺失时留空，不渲染出 NaN', () => {
-    expect(compressionSummary(0, 100, false)).toBe('')
-    expect(compressionSummary(100, Number.NaN, false)).toBe('')
+    expect(compressionSummary(0, 100, 'server')).toBe('')
+    expect(compressionSummary(100, Number.NaN, 'server')).toBe('')
   })
 })

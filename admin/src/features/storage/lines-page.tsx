@@ -285,7 +285,7 @@ function LineDialog({ providerId, line, onClose }: { providerId: number; line?: 
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className='max-h-[85vh] overflow-y-auto sm:max-w-lg'>
+      <DialogContent className='sm:max-w-lg'>
         <DialogHeader>
           <DialogTitle>{creating ? '新建线路' : `编辑线路：${line.name || line.id}`}</DialogTitle>
           <DialogDescription>配置访问域名与签名方式；地区规则在列表的「地区规则」按钮里单独编辑。</DialogDescription>
@@ -429,7 +429,7 @@ function RulesDialog({ line, onClose }: { line: StorageLine; onClose: () => void
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className='max-h-[85vh] overflow-y-auto sm:max-w-2xl'>
+      <DialogContent className='sm:max-w-2xl'>
         <DialogHeader>
           <DialogTitle>地区规则：{line.name || `线路 ${line.id}`}</DialogTitle>
           <DialogDescription>命中任意一条规则即视为「本地区线路」。国家填 ISO 两位字母（如 CN、HK）或 * ；省份、运营商填 * 表示不限。</DialogDescription>

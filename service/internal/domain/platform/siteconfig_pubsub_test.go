@@ -59,8 +59,8 @@ func TestSiteConfig_PropagatesAcrossInstances(t *testing.T) {
 	})
 
 	// 两个实例共用同一个 Valkey（同前缀 → 同二级缓存键；同频道 → 同失效广播），各自独立的一级缓存。
-	svcA := platform.NewSiteConfigService(repo, cache.New(client, prefix), cache.NewInvalidator(client, channel))
-	svcB := platform.NewSiteConfigService(repo, cache.New(client, prefix), cache.NewInvalidator(client, channel))
+	svcA := platform.NewSiteConfigService(repo, cache.New(client, prefix), cache.NewInvalidator(client, channel), nil)
+	svcB := platform.NewSiteConfigService(repo, cache.New(client, prefix), cache.NewInvalidator(client, channel), nil)
 
 	// B 订阅失效广播：先清本地缓存，再把 topic 送进通道供测试观察（顺序保证收到时失效已完成）。
 	seen := make(chan string, 16)

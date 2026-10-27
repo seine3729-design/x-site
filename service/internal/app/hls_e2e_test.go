@@ -177,7 +177,7 @@ func TestHLS_EndToEnd(t *testing.T) {
 	providerA, providerB := mkProvider("-a"), mkProvider("-b")
 	mustExec(t, pool.Exec, `INSERT INTO media_replica (object_id, provider_id, status, replicated_at) VALUES ($1, $2, 'ready', now())`, objectID, providerA)
 
-	lines := storage.NewLineService(storageRepo, nil, policy, nil)
+	lines := storage.NewLineService(storageRepo, nil, policy, nil, nil)
 	mkLine := func(name string, in storage.LineInput) storage.Line {
 		in.Name, in.Kind, in.RegionScope, in.TokenTTL = mark+name, storage.LineVideo, storage.ScopeGlobal, 300
 		if in.ProviderID == 0 {

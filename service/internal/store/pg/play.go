@@ -29,7 +29,7 @@ func (r *PlayRepo) PlayableEpisode(ctx context.Context, id int64) (play.Episode,
 	}
 	return play.Episode{
 		ID: row.ID, DramaID: row.DramaID, Access: content.Access(row.Access), TrialSec: row.TrialSec,
-		VideoObjectID: row.VideoObjectID, ObjectKey: row.ObjectKey,
+		DurationSec: row.DurationSec, VideoObjectID: row.VideoObjectID, ObjectKey: row.ObjectKey,
 	}, nil
 }
 

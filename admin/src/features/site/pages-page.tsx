@@ -256,7 +256,7 @@ function PageDialog({ item, onClose }: { item?: StaticPage; onClose: () => void 
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className='max-h-[90vh] overflow-y-auto sm:max-w-3xl'>
+      <DialogContent className='sm:max-w-3xl'>
         <DialogHeader>
           <DialogTitle>{creating ? '新建静态页' : `编辑静态页 #${item.id}`}</DialogTitle>
           <DialogDescription>

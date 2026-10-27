@@ -86,7 +86,8 @@
 
 	function vipTitle() {
 		if (session.status !== 'user') return i18n.t('vip.bannerTitle');
-		return vipStatus?.is_vip ? i18n.t('vip.memberActive') : i18n.t('vip.memberInactive');
+		if (vipPending || vipFailed || !vipStatus) return i18n.t('vip.bannerTitle');
+		return vipStatus.is_vip ? i18n.t('vip.memberActive') : i18n.t('vip.memberInactive');
 	}
 
 	function vipDescription() {
@@ -148,16 +149,11 @@
 		{/if}
 
 		<!-- 会员状态是浏览器端个人请求，role=status 仅播报完整状态文本，不移动焦点。 -->
-		<a
-			href={i18n.path('/vip')}
-			class="mt-5 flex items-center gap-3 rounded-2xl bg-gradient-to-r from-[#3a2a0d] via-[#2a1f0c] to-[#1a1408] p-4 text-[#f7e3b0] ring-1 ring-[#e3a93a]/30 ring-inset"
-		>
-			<span class="grid size-10 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-[#f7d27a] to-[#e3a93a] text-on-vip">
-				<Icon name="crown" size={20} />
-			</span>
+		<a href={i18n.path('/vip')} class="vip-membership-banner mt-5">
+			<span class="vip-membership-banner-icon" aria-hidden="true"><Icon name="crown" size={20} /></span>
 			<span class="min-w-0 flex-1">
 				<span class="block text-[15px] font-bold">{vipTitle()}</span>
-				<span class="block truncate text-xs text-[#f7e3b0]/70" role="status" aria-atomic="true">{vipDescription()}</span>
+				<span class="vip-membership-banner-description" role="status" aria-atomic="true">{vipDescription()}</span>
 			</span>
 			<span class="btn btn-sm btn-vip shrink-0">{i18n.t(session.status === 'user' ? 'vip.viewMembership' : 'vip.cta')}</span>
 		</a>

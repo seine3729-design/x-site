@@ -47,6 +47,7 @@ import { Route as AuthenticatedTaxonomiesRouteImport } from './routes/_authentic
 import { Route as AuthenticatedTopicsRouteImport } from './routes/_authenticated/topics'
 import { Route as AuthenticatedTrashRouteImport } from './routes/_authenticated/trash'
 import { Route as AuthenticatedUsersRouteImport } from './routes/_authenticated/users'
+import { Route as AuthenticatedAnalyticsFinanceRouteImport } from './routes/_authenticated/analytics/finance'
 import { Route as AuthenticatedDramasIndexRouteImport } from './routes/_authenticated/dramas/index'
 import { Route as AuthenticatedDramasIdRouteImport } from './routes/_authenticated/dramas/$id'
 import { Route as AuthenticatedFeedbackApiKeysRouteImport } from './routes/_authenticated/feedback/api-keys'
@@ -61,6 +62,8 @@ import { Route as AuthenticatedStoragePreviewRouteImport } from './routes/_authe
 import { Route as AuthenticatedStorageProvidersRouteImport } from './routes/_authenticated/storage/providers'
 import { Route as AuthenticatedStorageSettingsRouteImport } from './routes/_authenticated/storage/settings'
 import { Route as AuthenticatedVipPlansRouteImport } from './routes/_authenticated/vip/plans'
+import { Route as AuthenticatedAnalyticsDramasIndexRouteImport } from './routes/_authenticated/analytics/dramas/index'
+import { Route as AuthenticatedAnalyticsDramasIdRouteImport } from './routes/_authenticated/analytics/dramas/$id'
 
 const AuthenticatedRouteRoute = AuthenticatedRouteRouteImport.update({
   id: '/_authenticated',
@@ -255,6 +258,12 @@ const AuthenticatedUsersRoute = AuthenticatedUsersRouteImport.update({
   path: '/users',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedAnalyticsFinanceRoute =
+  AuthenticatedAnalyticsFinanceRouteImport.update({
+    id: '/analytics/finance',
+    path: '/analytics/finance',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const AuthenticatedDramasIndexRoute =
   AuthenticatedDramasIndexRouteImport.update({
     id: '/dramas/',
@@ -337,6 +346,18 @@ const AuthenticatedVipPlansRoute = AuthenticatedVipPlansRouteImport.update({
   path: '/vip/plans',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedAnalyticsDramasIndexRoute =
+  AuthenticatedAnalyticsDramasIndexRouteImport.update({
+    id: '/analytics/dramas/',
+    path: '/analytics/dramas/',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
+const AuthenticatedAnalyticsDramasIdRoute =
+  AuthenticatedAnalyticsDramasIdRouteImport.update({
+    id: '/analytics/dramas/$id',
+    path: '/analytics/dramas/$id',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AuthenticatedIndexRoute
@@ -376,6 +397,7 @@ export interface FileRoutesByFullPath {
   '/topics': typeof AuthenticatedTopicsRoute
   '/trash': typeof AuthenticatedTrashRoute
   '/users': typeof AuthenticatedUsersRoute
+  '/analytics/finance': typeof AuthenticatedAnalyticsFinanceRoute
   '/dramas/$id': typeof AuthenticatedDramasIdRoute
   '/feedback/api-keys': typeof AuthenticatedFeedbackApiKeysRoute
   '/feedback/invites': typeof AuthenticatedFeedbackInvitesRoute
@@ -390,6 +412,8 @@ export interface FileRoutesByFullPath {
   '/storage/settings': typeof AuthenticatedStorageSettingsRoute
   '/vip/plans': typeof AuthenticatedVipPlansRoute
   '/dramas/': typeof AuthenticatedDramasIndexRoute
+  '/analytics/dramas/$id': typeof AuthenticatedAnalyticsDramasIdRoute
+  '/analytics/dramas/': typeof AuthenticatedAnalyticsDramasIndexRoute
 }
 export interface FileRoutesByTo {
   '/login': typeof authLoginRoute
@@ -429,6 +453,7 @@ export interface FileRoutesByTo {
   '/trash': typeof AuthenticatedTrashRoute
   '/users': typeof AuthenticatedUsersRoute
   '/': typeof AuthenticatedIndexRoute
+  '/analytics/finance': typeof AuthenticatedAnalyticsFinanceRoute
   '/dramas/$id': typeof AuthenticatedDramasIdRoute
   '/feedback/api-keys': typeof AuthenticatedFeedbackApiKeysRoute
   '/feedback/invites': typeof AuthenticatedFeedbackInvitesRoute
@@ -443,6 +468,8 @@ export interface FileRoutesByTo {
   '/storage/settings': typeof AuthenticatedStorageSettingsRoute
   '/vip/plans': typeof AuthenticatedVipPlansRoute
   '/dramas': typeof AuthenticatedDramasIndexRoute
+  '/analytics/dramas/$id': typeof AuthenticatedAnalyticsDramasIdRoute
+  '/analytics/dramas': typeof AuthenticatedAnalyticsDramasIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -484,6 +511,7 @@ export interface FileRoutesById {
   '/_authenticated/trash': typeof AuthenticatedTrashRoute
   '/_authenticated/users': typeof AuthenticatedUsersRoute
   '/_authenticated/': typeof AuthenticatedIndexRoute
+  '/_authenticated/analytics/finance': typeof AuthenticatedAnalyticsFinanceRoute
   '/_authenticated/dramas/$id': typeof AuthenticatedDramasIdRoute
   '/_authenticated/feedback/api-keys': typeof AuthenticatedFeedbackApiKeysRoute
   '/_authenticated/feedback/invites': typeof AuthenticatedFeedbackInvitesRoute
@@ -498,6 +526,8 @@ export interface FileRoutesById {
   '/_authenticated/storage/settings': typeof AuthenticatedStorageSettingsRoute
   '/_authenticated/vip/plans': typeof AuthenticatedVipPlansRoute
   '/_authenticated/dramas/': typeof AuthenticatedDramasIndexRoute
+  '/_authenticated/analytics/dramas/$id': typeof AuthenticatedAnalyticsDramasIdRoute
+  '/_authenticated/analytics/dramas/': typeof AuthenticatedAnalyticsDramasIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -539,6 +569,7 @@ export interface FileRouteTypes {
     | '/topics'
     | '/trash'
     | '/users'
+    | '/analytics/finance'
     | '/dramas/$id'
     | '/feedback/api-keys'
     | '/feedback/invites'
@@ -553,6 +584,8 @@ export interface FileRouteTypes {
     | '/storage/settings'
     | '/vip/plans'
     | '/dramas/'
+    | '/analytics/dramas/$id'
+    | '/analytics/dramas/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/login'
@@ -592,6 +625,7 @@ export interface FileRouteTypes {
     | '/trash'
     | '/users'
     | '/'
+    | '/analytics/finance'
     | '/dramas/$id'
     | '/feedback/api-keys'
     | '/feedback/invites'
@@ -606,6 +640,8 @@ export interface FileRouteTypes {
     | '/storage/settings'
     | '/vip/plans'
     | '/dramas'
+    | '/analytics/dramas/$id'
+    | '/analytics/dramas'
   id:
     | '__root__'
     | '/_authenticated'
@@ -646,6 +682,7 @@ export interface FileRouteTypes {
     | '/_authenticated/trash'
     | '/_authenticated/users'
     | '/_authenticated/'
+    | '/_authenticated/analytics/finance'
     | '/_authenticated/dramas/$id'
     | '/_authenticated/feedback/api-keys'
     | '/_authenticated/feedback/invites'
@@ -660,6 +697,8 @@ export interface FileRouteTypes {
     | '/_authenticated/storage/settings'
     | '/_authenticated/vip/plans'
     | '/_authenticated/dramas/'
+    | '/_authenticated/analytics/dramas/$id'
+    | '/_authenticated/analytics/dramas/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -936,6 +975,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedUsersRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/analytics/finance': {
+      id: '/_authenticated/analytics/finance'
+      path: '/analytics/finance'
+      fullPath: '/analytics/finance'
+      preLoaderRoute: typeof AuthenticatedAnalyticsFinanceRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/dramas/': {
       id: '/_authenticated/dramas/'
       path: '/dramas'
@@ -1034,6 +1080,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedVipPlansRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/analytics/dramas/': {
+      id: '/_authenticated/analytics/dramas/'
+      path: '/analytics/dramas'
+      fullPath: '/analytics/dramas/'
+      preLoaderRoute: typeof AuthenticatedAnalyticsDramasIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/analytics/dramas/$id': {
+      id: '/_authenticated/analytics/dramas/$id'
+      path: '/analytics/dramas/$id'
+      fullPath: '/analytics/dramas/$id'
+      preLoaderRoute: typeof AuthenticatedAnalyticsDramasIdRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
   }
 }
 
@@ -1073,6 +1133,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedTrashRoute: typeof AuthenticatedTrashRoute
   AuthenticatedUsersRoute: typeof AuthenticatedUsersRoute
   AuthenticatedIndexRoute: typeof AuthenticatedIndexRoute
+  AuthenticatedAnalyticsFinanceRoute: typeof AuthenticatedAnalyticsFinanceRoute
   AuthenticatedDramasIdRoute: typeof AuthenticatedDramasIdRoute
   AuthenticatedFeedbackApiKeysRoute: typeof AuthenticatedFeedbackApiKeysRoute
   AuthenticatedFeedbackInvitesRoute: typeof AuthenticatedFeedbackInvitesRoute
@@ -1087,6 +1148,8 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedStorageSettingsRoute: typeof AuthenticatedStorageSettingsRoute
   AuthenticatedVipPlansRoute: typeof AuthenticatedVipPlansRoute
   AuthenticatedDramasIndexRoute: typeof AuthenticatedDramasIndexRoute
+  AuthenticatedAnalyticsDramasIdRoute: typeof AuthenticatedAnalyticsDramasIdRoute
+  AuthenticatedAnalyticsDramasIndexRoute: typeof AuthenticatedAnalyticsDramasIndexRoute
 }
 
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
@@ -1125,6 +1188,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedTrashRoute: AuthenticatedTrashRoute,
   AuthenticatedUsersRoute: AuthenticatedUsersRoute,
   AuthenticatedIndexRoute: AuthenticatedIndexRoute,
+  AuthenticatedAnalyticsFinanceRoute: AuthenticatedAnalyticsFinanceRoute,
   AuthenticatedDramasIdRoute: AuthenticatedDramasIdRoute,
   AuthenticatedFeedbackApiKeysRoute: AuthenticatedFeedbackApiKeysRoute,
   AuthenticatedFeedbackInvitesRoute: AuthenticatedFeedbackInvitesRoute,
@@ -1139,6 +1203,9 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedStorageSettingsRoute: AuthenticatedStorageSettingsRoute,
   AuthenticatedVipPlansRoute: AuthenticatedVipPlansRoute,
   AuthenticatedDramasIndexRoute: AuthenticatedDramasIndexRoute,
+  AuthenticatedAnalyticsDramasIdRoute: AuthenticatedAnalyticsDramasIdRoute,
+  AuthenticatedAnalyticsDramasIndexRoute:
+    AuthenticatedAnalyticsDramasIndexRoute,
 }
 
 const AuthenticatedRouteRouteWithChildren =

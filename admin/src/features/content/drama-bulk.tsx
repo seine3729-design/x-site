@@ -230,7 +230,7 @@ function SetTermsDialog({ ids, onClose, onDone }: BulkDialogProps) {
   })
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className='max-h-[90vh] overflow-y-auto sm:max-w-2xl'>
+      <DialogContent className='sm:max-w-2xl'>
         <form
           className='flex flex-col gap-4'
           onSubmit={(e) => {

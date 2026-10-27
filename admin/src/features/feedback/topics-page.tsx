@@ -33,7 +33,7 @@ import {
 } from '@/components/ui'
 import { Form } from '@/components/ui/form'
 import { LoadError, PageHeading, WithReason } from '@/features/access/shared'
-import { SelectField, SwitchField, TextField } from '@/features/content/components/fields'
+import { DateField, SelectField, SwitchField, TextField } from '@/features/content/components/fields'
 import { FilterSelect, ResetButton, SearchBox } from '@/features/content/components/list-toolbar'
 import { Pager } from '@/features/content/components/pager'
 import { withFilter } from '@/features/content/search'
@@ -265,7 +265,7 @@ type FormValues = z.infer<typeof schema>
 
 const pad2 = (n: number) => String(n).padStart(2, '0')
 
-/** 把接口返回的 ISO 时间转成 datetime-local 能用的本地时间字符串。 */
+/** 把接口返回的 ISO 时间转成 DatePicker（datetime 模式）用的本地时间字符串 `yyyy-MM-ddTHH:mm`。 */
 function toLocalInput(iso: string | null): string {
   if (!iso) return ''
   const ms = Date.parse(iso)
@@ -315,7 +315,7 @@ function TopicDialog({
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className='max-h-[90vh] overflow-y-auto sm:max-w-2xl'>
+      <DialogContent className='sm:max-w-2xl'>
         <DialogHeader>
           <DialogTitle>{topic ? `编辑「${topic.title}」` : '新建议题'}</DialogTitle>
           <DialogDescription>
@@ -379,11 +379,11 @@ function TopicDialog({
                 disabled={!editable}
               />
             </div>
-            <TextField
+            <DateField
               control={form.control}
               name='ends_at'
               label='截止时间'
-              type='datetime-local'
+              mode='datetime'
               placeholder='留空表示不限时间'
               description='到点后前台自动停止收回答，状态仍显示「征集中」。'
               disabled={!editable}
@@ -422,7 +422,7 @@ function AnswersDialog({ topic, editable, onClose }: { topic: FbTopic; editable:
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className='max-h-[90vh] overflow-y-auto sm:max-w-3xl'>
+      <DialogContent className='sm:max-w-3xl'>
         <DialogHeader>
           <DialogTitle>「{topic.title}」的回答</DialogTitle>
           <DialogDescription>

@@ -315,7 +315,7 @@ function MenuDialog({ item, position, onClose }: { item?: SiteMenu; position?: M
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className='max-h-[90vh] overflow-y-auto sm:max-w-2xl'>
+      <DialogContent className='sm:max-w-2xl'>
         <DialogHeader>
           <DialogTitle>{creating ? '新建菜单' : `编辑菜单 #${item.id}`}</DialogTitle>
           <DialogDescription>新建或改位置时排在该位置的末尾，顺序随后在列表里拖动调整。</DialogDescription>

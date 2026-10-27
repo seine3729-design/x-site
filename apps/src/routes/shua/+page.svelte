@@ -1,17 +1,48 @@
 <script lang="ts">
+	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { onMount } from 'svelte';
 	import type { CursorPage, DramaCard, DramaDetail } from '#lib/api/types.ts';
-	import DramaActions from '#lib/drama/DramaActions.svelte';
+	import CommentSection from '#lib/comment/CommentSection.svelte';
+		import DramaActions from '#lib/drama/DramaActions.svelte';
 	import { dramaPath, episodesLabel, playPath } from '#lib/drama/labels.ts';
 	import Poster from '#lib/drama/Poster.svelte';
 	import { getI18n } from '#lib/i18n/context.ts';
 	import FeedPlayer from '#lib/shua/FeedPlayer.svelte';
+	import { featureOn, getSite } from '#lib/site.ts';
 	import EmptyState from '#lib/ui/EmptyState.svelte';
 	import Icon from '#lib/ui/Icon.svelte';
+	import Sheet from '#lib/ui/Sheet.svelte';
 
 	let { data } = $props();
 	const i18n = getI18n();
+	const site = $derived(getSite());
+	const commentsOn = $derived(featureOn(site.features, 'comments'));
+
+	// —— 评论：按当前在播的那一集，手机端从底部滑上来的抽屉 ——
+	let commentEpisode = $state(0);
+	let commentCount = $state(0);
+	let commentComplete = $state(false);
+	const commentLabel = $derived(
+		commentCount > 0
+			? i18n.t('comment.titleCount', { n: commentComplete ? commentCount : `${commentCount}+` })
+			: i18n.t('comment.title')
+	);
+
+	function openComments(episodeId: number) {
+		commentCount = 0;
+		commentComplete = false;
+		commentEpisode = episodeId;
+	}
+
+	/** 顶部返回：有来路就退回去，直接进来的（分享链接、刷新）回首页 */
+	function back() {
+		if (history.length > 1) {
+			history.back();
+		} else {
+			void goto(i18n.path('/'));
+		}
+	}
 
 	let items = $state<DramaCard[]>([]);
 	let cursor = $state<string | null>(null);
@@ -175,7 +206,31 @@
 					     手机端留出底部 7rem：下面是播放器自己的进度条（约 52px）与下一集按钮（约 96px） -->
 					<!-- 参数类型要显式写：这个 snippet 是先具名声明、再用 {info} 传给 FeedPlayer 的，
 					     不是内联在组件标签里，svelte-check 推不出参数类型（会报 implicit any） -->
-					{#snippet info({ hasNext, onnext }: { hasNext: boolean; onnext: () => void })}
+					{#snippet info({
+						hasNext,
+						onnext,
+						episodeId,
+						episodeNumber
+					}: {
+						hasNext: boolean;
+						onnext: () => void;
+						episodeId: number;
+						episodeNumber: number;
+					})}
+						<!-- 手机端顶部返回条：电脑端有页头与左右切换按钮，不需要 -->
+						<div
+							class="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-center gap-2 bg-gradient-to-b from-black/60 to-transparent px-2 pt-[max(env(safe-area-inset-top),0.5rem)] pb-6 text-white lg:hidden"
+						>
+							<button
+								type="button"
+								class="pointer-events-auto grid size-10 shrink-0 place-items-center rounded-full"
+								aria-label={i18n.t('nav.back')}
+								onclick={back}
+							>
+								<Icon name="chevron-left" size={26} class="rtl:rotate-180" />
+							</button>
+							<p class="min-w-0 flex-1 truncate text-[15px] font-semibold">{i18n.t('nav.shua')}</p>
+						</div>
 						<div
 							class="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/85 via-black/40 to-transparent px-4 pt-16 pb-14 text-white lg:pb-20"
 						>
@@ -208,7 +263,14 @@
 							</div>
 						</div>
 						<div class="absolute end-2 bottom-28 z-10 lg:bottom-32">
-							<DramaActions {drama} variant="rail" />
+							<DramaActions
+								{drama}
+								variant="rail"
+								oncomment={commentsOn && episodeId > 0 ? () => openComments(episodeId) : undefined}
+								commentCount={commentEpisode === episodeId ? commentCount : 0}
+								shareUrl={new URL(i18n.path(playPath(drama.id, episodeNumber || 1)), page.url.origin).href}
+								shareSubtitle={i18n.t('episode.label', { n: episodeNumber || 1 })}
+							/>
 						</div>
 					{/snippet}
 
@@ -250,3 +312,18 @@
 		</div>
 	</div>
 {/if}
+
+<!-- 评论抽屉：内容在打开时才挂载 -->
+<Sheet fill open={commentEpisode > 0} title={commentLabel} onclose={() => (commentEpisode = 0)}>
+	{#if commentEpisode > 0}
+		<CommentSection
+			class="flex-1"
+			variant="sheet"
+			episodeId={commentEpisode}
+			oncount={(n, complete) => {
+				commentCount = n;
+				commentComplete = complete;
+			}}
+		/>
+	{/if}
+</Sheet>

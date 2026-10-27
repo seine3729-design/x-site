@@ -62,6 +62,12 @@ export class PlayerController {
 
 	currentTime = $state(0);
 	duration = $state(0);
+	/**
+	 * 整集时长（秒），取自选源的 duration_sec。试看清单只含前 trial_sec 秒，video.duration（duration）只有试看长度，
+	 * 进度条若按它显示就只有试看秒数；用 fullDuration 把总长显示为整集，可播区间仍只到 duration（试看片段）。
+	 * 为 0 表示老产物未回填，前台回退到 duration（与改动前一致）。
+	 */
+	fullDuration = $state(0);
 	buffered = $state(0);
 	muted = $state(false);
 	volume = $state(1);
@@ -176,6 +182,14 @@ export class PlayerController {
 		};
 	}
 
+	/**
+	 * 当前已加载的分集。页面换集时 data 先变、`load()` 可能稍后才调用（要先读本机续播位置），
+	 * 这段时间 `phase` 还停在上一集的 'ended'，调用方要靠它区分「真的播完了」与「刚换集」。
+	 */
+	get episodeId(): number {
+		return this.#episodeId;
+	}
+
 	/** 播放某一集；startAt 为续播位置（秒） */
 	async load(episodeId: number, startAt = 0) {
 		if (episodeId !== this.#episodeId) {
@@ -191,6 +205,7 @@ export class PlayerController {
 		this.phase = 'loading';
 		this.currentTime = startAt;
 		this.duration = 0;
+		this.fullDuration = 0;
 		this.qualities = [];
 		this.quality = -1;
 		this.destroyHls();
@@ -201,6 +216,7 @@ export class PlayerController {
 		}
 		this.access = sources.access;
 		this.trialSec = sources.trial_sec;
+		this.fullDuration = sources.duration_sec;
 		this.lines = sources.lines;
 		this.lineIndex = 0;
 		await this.#attach(generation);

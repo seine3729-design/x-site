@@ -22,7 +22,25 @@ type SiteConfig struct {
 	AgeGate   json.RawMessage `json:"age_gate"`
 	Features  json.RawMessage `json:"features"`
 	Addresses json.RawMessage `json:"addresses"`
-	UpdatedAt time.Time       `json:"updated_at"`
+	// Media 是图片与视频线路的域名池，来自后台存储线路表（domain/storage 的 PoolService）。
+	// 客户端用它拼图片相对 key，Web 还用它按请求生成 CSP（docs/04 F、docs/12 第 6 节）。
+	Media     MediaDomains `json:"media"`
+	UpdatedAt time.Time    `json:"updated_at"`
+}
+
+// MediaDomains 是随站点配置下发的线路域名池（docs/04 F）。
+// 字段与 domain/storage.DomainPool 一对一，适配在 internal/app（platform 不依赖 storage）。
+type MediaDomains struct {
+	// ImageBases 是图片线路的访问前缀（含路径前缀），按优先级排列：图片相对 key 拼在其后，首选失败换下一条。
+	ImageBases []string `json:"image_bases"`
+	// VideoOrigins 是视频线路的 scheme://host[:port]，只用于把域名登记进 CSP 的 connect-src。
+	VideoOrigins []string `json:"video_origins"`
+}
+
+// MediaDomainReader 读取线路域名池。由 internal/app 把 domain/storage 的实现适配进来；
+// 为 nil 时下发空池（前台退回部署配置里的域名，见 apps 的 IMAGE_BASE_URLS）。
+type MediaDomainReader interface {
+	MediaDomains(ctx context.Context) (MediaDomains, error)
 }
 
 // ETag 由版本号生成，版本不变则客户端可用缓存。
@@ -72,12 +90,15 @@ type SiteConfigService struct {
 	repo  SiteConfigRepo
 	cache Cache
 	inval Invalidator
+	media MediaDomainReader
 	local atomic.Pointer[cachedConfig]
 	now   func() time.Time
 }
 
-func NewSiteConfigService(repo SiteConfigRepo, cache Cache, inval Invalidator) *SiteConfigService {
-	return &SiteConfigService{repo: repo, cache: cache, inval: inval, now: time.Now}
+// NewSiteConfigService 装配站点配置读取。media 提供线路域名池（docs/04 F），可为 nil（下发空池）。
+// 线路表变更必须同样走 BumpVersion，否则前台的 CSP 与图片前缀会停在旧域名上。
+func NewSiteConfigService(repo SiteConfigRepo, cache Cache, inval Invalidator, media MediaDomainReader) *SiteConfigService {
+	return &SiteConfigService{repo: repo, cache: cache, inval: inval, media: media, now: time.Now}
 }
 
 // Get 返回当前站点配置：先查进程内一级缓存（短 TTL），未命中走 Valkey 读穿缓存，再回源 PG。
@@ -87,13 +108,42 @@ func (s *SiteConfigService) Get(ctx context.Context) (SiteConfig, error) {
 	}
 	var cfg SiteConfig
 	err := s.cache.GetOrLoadJSON(ctx, siteConfigCacheKey, siteConfigL2TTL, &cfg, func(ctx context.Context) (any, error) {
-		return s.repo.GetPublicSiteConfig(ctx)
+		loaded, err := s.repo.GetPublicSiteConfig(ctx)
+		if err != nil {
+			return nil, err
+		}
+		// 域名池来自另一张表（storage_line），和配置各段一起进缓存、一起失效。
+		// 读失败就让整个配置读失败：域名池为空会让前台一张封面都加载不出来，
+		// 静默下发空池比报错更难排查（这也是原先靠部署环境变量时踩过的坑）。
+		if loaded.Media, err = s.mediaDomains(ctx); err != nil {
+			return nil, err
+		}
+		return loaded, nil
 	})
 	if err != nil {
 		return SiteConfig{}, err
 	}
 	s.local.Store(&cachedConfig{cfg: cfg, at: s.now()})
 	return cfg, nil
+}
+
+// mediaDomains 读线路域名池；未注入读取器时返回空池（切片用空数组，JSON 里不出现 null）。
+func (s *SiteConfigService) mediaDomains(ctx context.Context) (MediaDomains, error) {
+	empty := MediaDomains{ImageBases: []string{}, VideoOrigins: []string{}}
+	if s.media == nil {
+		return empty, nil
+	}
+	m, err := s.media.MediaDomains(ctx)
+	if err != nil {
+		return MediaDomains{}, err
+	}
+	if m.ImageBases == nil {
+		m.ImageBases = []string{}
+	}
+	if m.VideoOrigins == nil {
+		m.VideoOrigins = []string{}
+	}
+	return m, nil
 }
 
 // BumpVersion 在站点配置变更后调用：version +1，清本地与 Valkey 缓存，并广播失效让各实例秒级拿到新版本。

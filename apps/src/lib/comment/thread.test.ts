@@ -8,6 +8,7 @@ import {
 	emojiIndex,
 	isMine,
 	mergePages,
+	nextCursor,
 	prependComment,
 	splitContent
 } from './thread.ts';
@@ -112,6 +113,22 @@ describe('表情码渲染', () => {
 	it('未登记的表情码与方括号文本按原文保留', () => {
 		expect(splitContent('[未知表情]先放着', index)).toEqual([{ kind: 'text', text: '[未知表情]先放着' }]);
 		expect(splitContent('', index)).toEqual([]);
+	});
+});
+
+describe('下一页游标', () => {
+	it('空字符串当作没有下一页（接口没有 omitempty，到底时下发的是 ""）', () => {
+		// 当成「还有下一页」会让无限滚动不停重新请求第一页
+		expect(nextCursor('')).toBeUndefined();
+		expect(nextCursor('  ')).toBeUndefined();
+		expect(nextCursor(undefined)).toBeUndefined();
+		expect(nextCursor(null)).toBeUndefined();
+	});
+
+	it('游标没前进也当作到底了，避免原地打转', () => {
+		expect(nextCursor('99', '99')).toBeUndefined();
+		expect(nextCursor('98', '99')).toBe('98');
+		expect(nextCursor('2:163', undefined)).toBe('2:163');
 	});
 });
 

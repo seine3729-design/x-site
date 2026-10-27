@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	dom "xsite/service/internal/domain/upload"
 	"xsite/service/internal/store/blob"
@@ -56,9 +58,7 @@ func TestVerifyImageChecksSelectedFormatMagic(t *testing.T) {
 	}
 }
 
-// recordingStore 记录写入内容的对象存储桩。
-// PutStream 必须真正把 body 读完：视频双写用 io.Pipe 把主存储与暂存串在一起，
-// 任何一方不读都会把另一方阻塞住，这正是这些用例要盯住的行为。
+// recordingStore 记录写入内容的对象存储桩，用来断言「哪一桶收到了什么」。
 type recordingStore struct {
 	mu      sync.Mutex
 	objects map[string][]byte
@@ -128,90 +128,71 @@ func (s *recordingStore) object(key string) ([]byte, bool) {
 	return data, ok
 }
 
-// within 保证用例不会被双写死锁挂住，而是明确报出来。
-func within(t *testing.T, fn func() error) error {
-	t.Helper()
-	done := make(chan error, 1)
-	go func() { done <- fn() }()
-	select {
-	case err := <-done:
-		return err
-	case <-time.After(5 * time.Second):
-		t.Fatal("写入 5 秒内没有返回：两路写入互相卡住了")
-		return nil
-	}
-}
-
 func videoAsset(size int64) dom.Asset {
 	return dom.Asset{ProviderID: 7, Purpose: dom.PurposeEpisodeVideo, Kind: dom.KindVideo,
 		MIME: "video/mp4", SourceKey: "video/source/abc.mp4", SizeBytes: size}
 }
 
-// 视频在接收请求体的同时写入私有转码暂存桶：完成阶段不必再把整个源文件搬一遍。
-func TestWriteContentStagesVideoWhileReceiving(t *testing.T) {
+// 视频源文件只写私有转码暂存桶：主存储里那一份没有读者，多付一次上行会把跨公网的上传拖垮。
+func TestWriteContentSendsVideoOnlyToStage(t *testing.T) {
 	payload := bytes.Repeat([]byte("xsite-video-payload"), 5000)
 	primary, stage := newRecordingStore(), newRecordingStore()
 	h := &Handlers{Source: stage}
 	a := videoAsset(int64(len(payload)))
 
-	if err := within(t, func() error {
-		return h.writeContent(context.Background(), primary, a, bytes.NewReader(payload))
-	}); err != nil {
+	if err := h.writeContent(context.Background(), primary, a, bytes.NewReader(payload)); err != nil {
 		t.Fatalf("writeContent() err = %v", err)
 	}
 
-	got, ok := primary.object(a.SourceKey)
-	if !ok || !bytes.Equal(got, payload) {
-		t.Fatalf("主存储对象不正确：存在=%v 长度=%d", ok, len(got))
-	}
 	staged, ok := stage.object(dom.StageKey(a.ProviderID, a.SourceKey))
 	if !ok || !bytes.Equal(staged, payload) {
 		t.Fatalf("暂存对象不正确：存在=%v 长度=%d", ok, len(staged))
 	}
+	if len(primary.objects) != 0 {
+		t.Fatalf("视频源不应写入主存储，得到 %v", slices.Collect(maps.Keys(primary.objects)))
+	}
 }
 
-// 图片没有转码环节，只写主存储。
-func TestWriteContentKeepsImageSingleWrite(t *testing.T) {
+// 没有配置暂存桶时视频上传必须明确失败，而不是退回去写主存储。
+func TestWriteContentRejectsVideoWithoutStage(t *testing.T) {
+	primary := newRecordingStore()
+	h := &Handlers{}
+	a := videoAsset(8)
+	if err := h.writeContent(context.Background(), primary, a, bytes.NewReader([]byte("12345678"))); err == nil {
+		t.Fatal("暂存桶未配置时应返回错误")
+	}
+	if len(primary.objects) != 0 {
+		t.Fatalf("不应回退写入主存储，得到 %v", slices.Collect(maps.Keys(primary.objects)))
+	}
+}
+
+// 图片要经 CDN 分发，仍然写配置的主存储。
+func TestWriteContentKeepsImageOnPrimary(t *testing.T) {
 	payload := []byte("RIFF1234WEBPpayload")
 	primary, stage := newRecordingStore(), newRecordingStore()
 	h := &Handlers{Source: stage}
 	a := dom.Asset{ProviderID: 7, Purpose: dom.PurposeDramaCover, Kind: dom.KindImage,
 		MIME: "image/webp", ImageFormat: dom.FormatWebP, SourceKey: "img/drama_cover/abc.webp", SizeBytes: int64(len(payload))}
 
-	if err := within(t, func() error {
-		return h.writeContent(context.Background(), primary, a, bytes.NewReader(payload))
-	}); err != nil {
+	if err := h.writeContent(context.Background(), primary, a, bytes.NewReader(payload)); err != nil {
 		t.Fatalf("writeContent() err = %v", err)
 	}
 	if _, ok := primary.object(a.SourceKey); !ok {
 		t.Fatal("图片没有写入主存储")
 	}
 	if len(stage.objects) != 0 {
-		t.Fatalf("图片不应写入转码暂存桶，得到 %v", stage.objects)
+		t.Fatalf("图片不应写入转码暂存桶，得到 %v", slices.Collect(maps.Keys(stage.objects)))
 	}
 }
 
-// 任一路写入失败都要立刻把整次上传判失败，并且不能让另一路卡在等数据上。
-func TestWriteContentFailsFastWhenEitherTargetRejects(t *testing.T) {
+// 暂存桶写入失败时整次上传判失败。
+func TestWriteContentFailsWhenStageRejects(t *testing.T) {
 	payload := bytes.Repeat([]byte("video"), 20000)
-	for _, tc := range []struct {
-		name            string
-		primary, staged error
-	}{
-		{"主存储拒绝", errors.New("主存储不可用"), nil},
-		{"暂存桶拒绝", nil, errors.New("暂存桶不可用")},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			primary, stage := newRecordingStore(), newRecordingStore()
-			primary.putErr, stage.putErr = tc.primary, tc.staged
-			h := &Handlers{Source: stage}
-			err := within(t, func() error {
-				return h.writeContent(context.Background(), primary, videoAsset(int64(len(payload))), bytes.NewReader(payload))
-			})
-			if err == nil {
-				t.Fatal("一路写入失败时 writeContent 应返回错误")
-			}
-		})
+	primary, stage := newRecordingStore(), newRecordingStore()
+	stage.putErr = errors.New("暂存桶不可用")
+	h := &Handlers{Source: stage}
+	if err := h.writeContent(context.Background(), primary, videoAsset(int64(len(payload))), bytes.NewReader(payload)); err == nil {
+		t.Fatal("暂存写入失败时 writeContent 应返回错误")
 	}
 }
 
@@ -246,5 +227,36 @@ func TestStageVideoCopiesWhenStageMissing(t *testing.T) {
 	staged, ok := stage.object(dom.StageKey(a.ProviderID, a.SourceKey))
 	if !ok || !bytes.Equal(staged, payload) {
 		t.Fatalf("回退复制没有写入暂存：存在=%v 长度=%d", ok, len(staged))
+	}
+}
+
+// 预览代理按 key 直接读对象存储，所以这道校验是唯一的边界：
+// 放过 img/ 之外的路径就等于把私有视频源、HLS 产物和内容密钥也变成后台可下载的东西。
+func TestValidImageKeyOnlyAcceptsImagePrefix(t *testing.T) {
+	for _, tc := range []struct {
+		key  string
+		want bool
+	}{
+		{"img/drama_cover/01a1-7abc.webp", true},
+		{"img/posters/ab/cd/hash.webp", true},
+		{"img/logo.webp", true},
+		{"", false},
+		{"video/source/01a1.mp4", false},
+		{"/img/logo.webp", false},
+		{"img/../video/source/01a1.mp4", false},
+		{"img/./logo.webp", false},
+		{"img//logo.webp", false},
+		{"img/logo.webp?x=1", false},
+		{"img/logo.webp#f", false},
+		{`img\logo.webp`, false},
+		{"img/logo\n.webp", false},
+		{"https://cdn.example.com/img/logo.webp", false},
+		{"img/" + strings.Repeat("a", imageKeyMaxLen), false},
+	} {
+		t.Run(tc.key, func(t *testing.T) {
+			if got := validImageKey(tc.key); got != tc.want {
+				t.Fatalf("validImageKey(%q) = %v，want %v", tc.key, got, tc.want)
+			}
+		})
 	}
 }

@@ -1,4 +1,4 @@
-import { binaryUpload, http } from '@/lib/http'
+import { binaryUpload, http, postBinaryForBlob } from '@/lib/http'
 
 export const MEDIA_UPLOAD_PURPOSES = [
   'drama_cover',
@@ -44,8 +44,23 @@ export type CreateMediaUploadInput = {
   episode_id?: number
 }
 
+/** 服务端图片优化的超时：后端要等外部优化服务两次往返（它自己的上限是 90 秒）。 */
+const IMAGE_OPTIMIZE_TIMEOUT_MS = 120_000
+
 export const mediaUploadApi = {
   create: (body: CreateMediaUploadInput) => http.post<MediaUpload>('/uploads', body),
+  /**
+   * 把原图交给服务端压缩并转成 WebP。
+   *
+   * 压缩必须在服务端做：优化服务的 API Key 不能下发浏览器。优化服务未配置、本月额度用尽（都是 503）
+   * 或图片无法识别（400）时抛 HttpError，调用方退回浏览器本地压缩，不要因此阻塞运营上传。
+   */
+  optimizeImage: (purpose: MediaUploadPurpose, file: Blob) =>
+    postBinaryForBlob('/images/optimize', file, {
+      contentType: file.type || 'application/octet-stream',
+      query: { purpose },
+      timeoutMs: IMAGE_OPTIMIZE_TIMEOUT_MS,
+    }),
   putContent: (id: string, body: Blob, contentType: string, onProgress?: (loaded: number, total: number) => void) =>
     binaryUpload.put<{ id: string; status: 'uploaded' }>(`/uploads/${id}/content`, body, { contentType, onProgress }),
   /**

@@ -1,0 +1,174 @@
+# 前台 Web（apps/）在 Dokploy 上的编排。域名 duanju66.cc，静态产物走 cdn.duanju66.cc。
+#
+# Dokploy 里怎么用：
+#   1. 新建 Compose 服务，Compose Type 选 Docker Compose
+#   2. Provider 选 GitHub/Git，分支 main，Compose Path 填 ./apps/docker-compose.yml
+#   3. Environment 标签页填下面「必须设置」的变量，然后 Deploy
+#
+# 两个服务，发布时的顺序是 assets（一次性，推产物到 R2）→ apps：
+#
+#   浏览器 ──┬─ /_app/immutable/*  ──────────────────→ cdn.duanju66.cc ─→ R2
+#            └─ 页面、/api/v1 ─→ Traefik ─→ apps:3001 ─→ service:8080
+#
+# **带内容哈希的产物由浏览器直接从 CDN 加载**，页面里写的就是 CDN 绝对地址。这个地址在
+# 构建期由 CDN_ASSET_PREFIX 决定，一个值同时管三处：SvelteKit 写进 HTML 的资源地址、
+# 生产 CSP 的白名单（config/security-headers.ts）、Service Worker 识别产物请求的前缀
+# （scripts/build-sw.ts 会拿构建产物反查，对不上直接让构建失败）。
+# 所以**换 CDN 域名必须重新构建**，只改运行期环境变量不生效。
+#
+# 域名只能二选一，不要同时用：
+#   A. 用本文件里的 Traefik 标签（已按 duanju66.cc 配好，含 www 跳转与 80→443）
+#   B. 删掉所有 labels 段，改用 Dokploy 的 Domains 标签页
+#   两边都配会生成重复的 router，结果不可预期。
+#
+# 这一份只编排前台。Go 后端（service）、PostgreSQL、Valkey 不在这里，必须另外部署好并且
+# 和本服务在同一张 dokploy-network 上，地址通过 SERVICE_INTERNAL_URL 给进来。
+
+x-apps-image: &apps-image
+  image: ${APPS_IMAGE:-xsite-apps}:${RELEASE_TAG:-local}
+  build:
+    # compose 文件在 apps/ 下，所以构建上下文就是 apps/，与 apps/Dockerfile 的预期一致
+    context: .
+    dockerfile: Dockerfile
+    target: runtime
+    args:
+      # 产物的 CDN 前缀。要和 assets 服务上传到的位置严格对应：
+      #   CDN_ASSET_PREFIX = https://<CDN_HOST>/<CDN_ASSETS_PREFIX>
+      #   对象键           = <CDN_ASSETS_PREFIX>/_app/immutable/...
+      CDN_ASSET_PREFIX: https://${CDN_HOST:-cdn.duanju66.cc}/${CDN_ASSETS_PREFIX:-apps}
+      # 线上留空：绝对链接用当次请求的 Host。这个值构建时就写进浏览器脚本了
+      PUBLIC_SITE_URL: ''
+
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: '20m'
+      max-file: '5'
+
+services:
+  # ------------------------------------------------------------------ 一次性：产物上 R2
+  # 和 apps 共用同一个镜像和同一段 build，所以上传的产物与正在运行的那一版是同一次构建的，
+  # 内容哈希不可能对不上（两次独立构建对不上时，页面会去 CDN 取一个不存在的文件名，
+  # 而且只在生产复现）。只传 build/client/_app/immutable，不删远端旧对象 ——
+  # 老页面还在引用的 chunk 要留着，清理靠 R2 的生命周期规则（apps/ 前缀 90 天）。
+  assets:
+    <<: [*apps-image, *logging]
+    restart: 'no'
+    # 继承自镜像的 HEALTHCHECK 探的是 HTTP 端口，这个容器不起服务
+    healthcheck:
+      disable: true
+    entrypoint: ['bun', 'scripts/upload-assets.ts']
+    environment:
+      R2_ENDPOINT: ${R2_ENDPOINT:?必须设置 R2_ENDPOINT（https://<账户ID>.r2.cloudflarestorage.com）}
+      R2_BUCKET: ${R2_BUCKET:?必须设置 R2_BUCKET}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:?必须设置 R2_ACCESS_KEY_ID}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:?必须设置 R2_SECRET_ACCESS_KEY}
+      # 对象键前缀，和上面构建参数里的那一段是同一个变量，不会配歪
+      CDN_ASSETS_PREFIX: ${CDN_ASSETS_PREFIX:-apps}
+    networks:
+      - dokploy-network
+
+  # ------------------------------------------------------------------ 应用：SSR + BFF
+  apps:
+    <<: [*apps-image, *logging]
+    restart: unless-stopped
+    # 产物没推上 CDN 就先别放流量进来，否则页面会去 CDN 取还不存在的 chunk
+    depends_on:
+      assets:
+        condition: service_completed_successfully
+    # 刻意用 expose 而不是 ports：只对 Traefik 所在的网络开放，不占宿主机端口
+    expose:
+      - '3001'
+    environment:
+      # ---------------------------------------------------------------- 监听
+      HOST: 0.0.0.0
+      PORT: '3001'
+
+      # ---------------------------------------------------------------- 反向代理
+      # Traefik 会写这两个头。PROTOCOL_HEADER 不设时 adapter 一律按 https 推断 origin，
+      # 设上之后以边缘实际使用的协议为准（表单 action 的 CSRF 校验按 origin 判断）。
+      PROTOCOL_HEADER: x-forwarded-proto
+      # BFF 调后端时要把真实客户端 IP 带过去（src/lib/server/api.ts 写 x-forwarded-for），
+      # 不设这一项的话 getClientAddress() 返回的是 Traefik 容器 IP，
+      # 后端会把所有访客算成同一个来源，限流和风控全失效。
+      ADDRESS_HEADER: x-forwarded-for
+      # 从 x-forwarded-for 右数第几个地址是真实客户端。
+      #   2 = Cloudflare 橙云代理 + Traefik（链是「客户端, CF 边缘」，默认架构）
+      #   1 = 直连 Traefik，前面没有 Cloudflare
+      # 配小了每个页面请求直接 500（报错 `XFF_DEPTH is 2, but only found 1 addresses`），
+      # 配大了把边缘节点 IP 当成客户端。换 CDN 拓扑时第一件事就是核对这个值。
+      XFF_DEPTH: ${APPS_XFF_DEPTH:-2}
+
+      # ---------------------------------------------------------------- 后端
+      # Go 后端的内网地址。service/docker-compose.yml 给自己挂了固定的网络别名 xsite-service，
+      # 所以直接用它，不用去查 Dokploy 生成的容器名。前提是那一份先部署好、在同一张网络上
+      SERVICE_INTERNAL_URL: ${SERVICE_INTERNAL_URL:-http://xsite-service:8080}
+      # 回源服务令牌，必须与 service 的 BFF_SERVICE_TOKEN 完全一致（至少 32 字符）
+      BFF_SERVICE_TOKEN: ${BFF_SERVICE_TOKEN:?必须设置 BFF_SERVICE_TOKEN（与 service 一致，至少 32 字符）}
+
+      # ---------------------------------------------------------------- 边缘
+      # 设上之后，只有带相同 x-edge-secret 的请求才会被采信 cf-ipcountry 等国家头。
+      # 这个头由下面的 xsite-apps-edge 中间件注入，客户端自己带的会被覆盖掉。
+      # 留空则不校验，等于任何人都能伪造地区（按地区选线会被牵着走）。
+      EDGE_SHARED_SECRET: ${EDGE_SHARED_SECRET:-}
+
+      # ---------------------------------------------------------------- 线路域名池
+      # 生产 CSP 的 img-src / connect-src 从这两项生成。后台线路表新增域名后必须同步这里，
+      # 否则封面和视频在生产被自己的 CSP 拦掉（apps/config/security-headers.ts）
+      IMAGE_BASE_URLS: ${IMAGE_BASE_URLS:-https://cdn.duanju66.cc}
+      MEDIA_CONNECT_ORIGINS: ${MEDIA_CONNECT_ORIGINS:-https://cdn.duanju66.cc}
+
+      # 注意：RATE_LIMIT_* 和 APP_ENV / CDN_ASSET_PREFIX 在这里设了也不生效 ——
+      # scripts/with-env.ts 会用镜像里 .env.production（以及构建期写入的 .env.production.local）
+      # 的同名值覆盖容器环境变量。要改配额就改 apps/.env.production 再重新构建。
+
+    networks:
+      - dokploy-network
+
+    # Traefik 路由（方案 A）。改用 Dokploy Domains 时把下面整段删掉。
+    # 用了 Dokploy 的 Isolated Deployments 时，各服务的 networks 和文件末尾的
+    # dokploy-network 声明也要一起去掉，由 Dokploy 自己注入隔离网络。
+    labels:
+      - traefik.enable=true
+      # 容器在多张网络上时，明确告诉 Traefik 从哪张网络回源
+      - traefik.docker.network=dokploy-network
+      - traefik.http.services.xsite-apps.loadbalancer.server.port=3001
+
+      # 主域名（HTTPS）
+      - traefik.http.routers.xsite-apps-web.rule=Host(`${APPS_DOMAIN:-duanju66.cc}`)
+      - traefik.http.routers.xsite-apps-web.entrypoints=websecure
+      - traefik.http.routers.xsite-apps-web.tls.certResolver=letsencrypt
+      - traefik.http.routers.xsite-apps-web.service=xsite-apps
+      - traefik.http.routers.xsite-apps-web.middlewares=xsite-apps-edge
+
+      # www 别名（HTTPS）→ 301 到主域名。正则去掉 www. 前缀，路径和查询串原样保留
+      - traefik.http.routers.xsite-apps-www.rule=Host(`${APPS_WWW_DOMAIN:-www.duanju66.cc}`)
+      - traefik.http.routers.xsite-apps-www.entrypoints=websecure
+      - traefik.http.routers.xsite-apps-www.tls.certResolver=letsencrypt
+      - traefik.http.routers.xsite-apps-www.service=xsite-apps
+      - traefik.http.routers.xsite-apps-www.middlewares=xsite-apps-apex
+      - traefik.http.middlewares.xsite-apps-apex.redirectregex.regex=^https://www\.(.*)
+      - traefik.http.middlewares.xsite-apps-apex.redirectregex.replacement=https://$${1}
+      - traefik.http.middlewares.xsite-apps-apex.redirectregex.permanent=true
+
+      # 两个域名的 HTTP 入口一律 301 到 HTTPS。
+      # Let's Encrypt 的 HTTP-01 挑战不受影响：Traefik 自己的 ACME 路由优先级更高
+      - traefik.http.routers.xsite-apps-http.rule=Host(`${APPS_DOMAIN:-duanju66.cc}`) || Host(`${APPS_WWW_DOMAIN:-www.duanju66.cc}`)
+      - traefik.http.routers.xsite-apps-http.entrypoints=web
+      - traefik.http.routers.xsite-apps-http.service=xsite-apps
+      - traefik.http.routers.xsite-apps-http.middlewares=xsite-apps-https
+      - traefik.http.middlewares.xsite-apps-https.redirectscheme.scheme=https
+      - traefik.http.middlewares.xsite-apps-https.redirectscheme.permanent=true
+
+      # 注入回源共享密钥。customRequestHeaders 是覆盖写入，客户端自己带的 x-edge-secret 进不来；
+      # EDGE_SHARED_SECRET 留空时这条等于把该头删掉，正好对应「不校验」的分支
+      - traefik.http.middlewares.xsite-apps-edge.headers.customrequestheaders.x-edge-secret=${EDGE_SHARED_SECRET:-}
+
+      # 刻意不加 Traefik 的 compress 中间件：HTML 由 src/lib/server/compress.ts 流式压（br q5），
+      # 容器里剩下的静态文件（service-worker.js、icons/）也带 Brotli 11 的预压缩文件。
+      # 再套一层只会把它们换成现压的低档结果；带哈希的产物根本不经过这里，由 CDN 压
+
+networks:
+  dokploy-network:
+    external: true

@@ -19,7 +19,7 @@
 		 * 会整体盖在播放器之上，把播放器自己的进度条等控件的点击全部吃掉。
 		 * 换集能力作为参数回传，页面才能把「看全集」和「下一集」排进同一行。
 		 */
-		info?: Snippet<[{ hasNext: boolean; onnext: () => void }]>;
+		info?: Snippet<[{ hasNext: boolean; onnext: () => void; episodeId: number; episodeNumber: number }]>;
 	};
 	let { drama, active, onended, info }: Props = $props();
 
@@ -95,7 +95,13 @@
 </script>
 
 {#snippet playerOverlay()}
-	{@render info?.({ hasNext: hasNextEpisode, onnext: playNextEpisode })}
+	<!-- 评论是按分集的，当前集也回传给页面（刷剧流在同一部剧里会连播下一集） -->
+	{@render info?.({
+		hasNext: hasNextEpisode,
+		onnext: playNextEpisode,
+		episodeId: episode?.id ?? 0,
+		episodeNumber: episode?.number ?? 0
+	})}
 {/snippet}
 
 {#if episode}

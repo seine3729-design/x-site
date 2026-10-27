@@ -332,7 +332,7 @@ function ProviderDialog({ provider, onClose }: { provider?: StorageProvider; onC
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className='max-h-[85vh] overflow-y-auto sm:max-w-lg'>
+      <DialogContent className='sm:max-w-lg'>
         <DialogHeader>
           <DialogTitle>{creating ? '新建存储源' : `编辑存储源：${provider.name}`}</DialogTitle>
           <DialogDescription>按类型填写连接信息；凭据加密保存、只写不读，保存后可在列表里测试连通性。</DialogDescription>

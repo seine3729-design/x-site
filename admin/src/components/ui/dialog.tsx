@@ -52,12 +52,15 @@ function DialogOverlay({
 
 function DialogContent({
   className,
+  bodyClassName,
   children,
   showCloseButton = true,
   onOpenAutoFocus,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
+  /** 滚动区（dialog-body）的样式覆盖，例如命令面板需要 `p-0`。 */
+  bodyClassName?: string
 }) {
   const containerRef = React.useRef<HTMLDivElement>(null)
 
@@ -85,8 +88,12 @@ function DialogContent({
       <DialogPrimitive.Content
         ref={containerRef}
         data-slot='dialog-content'
+        // 外层只负责定位与最大高度（不滚动），内容超出时由内部 dialog-body 滚动，
+        // 这样右上角关闭按钮始终停在原位，不会随内容滚走。
+        // 外层刻意不加 overflow-hidden：下拉框（SelectContent）会 portal 到这个元素里，
+        // 而它用的是 position: fixed，被 translate 变换当成包含块，一裁剪就展开不出弹窗范围。
         className={cn(
-          'fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-md border bg-background p-6 shadow-lg duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 sm:max-w-lg',
+          'fixed top-[50%] left-[50%] z-50 flex max-h-[calc(100dvh-4rem)] w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] flex-col rounded-md border bg-background shadow-lg duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 sm:max-w-lg',
           className
         )}
         onOpenAutoFocus={handleOpenAutoFocus}
@@ -100,15 +107,25 @@ function DialogContent({
         {...props}
       >
         <DialogContext.Provider value={containerRef.current}>
-          {children}
+          <div
+            data-slot='dialog-body'
+            className={cn(
+              'grid min-h-0 gap-4 overflow-y-auto overscroll-contain rounded-[inherit] p-6',
+              bodyClassName
+            )}
+          >
+            {children}
+          </div>
         </DialogContext.Provider>
         {showCloseButton && (
           <DialogPrimitive.Close
             data-slot='dialog-close'
-            className="absolute bg-[#E8E8E8] end-4 top-4 rounded-xs opacity-70 ring-offset-background transition-opacity hover:opacity-100 disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-5"
+            aria-label='关闭'
+            // 内容会从按钮下方滚过，所以要有不透明底色；颜色走主题变量，暗色模式下同样可读。
+            className="absolute inset-e-3 top-3 z-10 grid size-7 place-items-center rounded-md bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"
           >
             <XIcon />
-            <span className='sr-only'>Close</span>
+            <span className='sr-only'>关闭</span>
           </DialogPrimitive.Close>
         )}
       </DialogPrimitive.Content>

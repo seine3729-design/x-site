@@ -7,6 +7,8 @@ node_modules
 .wrangler
 /.svelte-kit
 /build
+# scripts/build-sw.ts 在每次构建前生成（见那个脚本的注释），不是源文件
+/static/service-worker.js
 
 # OS
 .DS_Store

@@ -13,7 +13,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"xsite/service/internal/crypto/authtoken"
 	"xsite/service/internal/domain/content"
+	"xsite/service/internal/domain/identity"
 	dom "xsite/service/internal/domain/play"
 	"xsite/service/internal/domain/storage"
 	"xsite/service/internal/errs"
@@ -259,5 +261,58 @@ func TestSources_IdentifyAndDebugGeo(t *testing.T) {
 	do(t, h, "/api/v1/episodes/1/sources", map[string]string{"X-Debug-Geo": "CN/广东/电信"})
 	if svc.calls[0].IP != "203.0.113.9" || svc.calls[0].Geo != (storage.Geo{}) {
 		t.Fatalf("非 dev 环境不能模拟地区：%+v", svc.calls[0])
+	}
+}
+
+// fakeResolver 模拟身份中间件的 Access Token 校验：按预置的身份 / 错误返回。
+type fakeResolver struct {
+	access identity.Access
+	err    error
+}
+
+func (f fakeResolver) ResolveAccess(string) (identity.Access, error) { return f.access, f.err }
+
+// 带有效 Bearer 的注册用户：UserID 透传到领域层（领域层据此对 login/vip 分集放完整清单）。
+func TestSources_RegisteredUserFromBearer(t *testing.T) {
+	svc := &fakeService{}
+	h, _ := newHandlers(svc)
+	h.Resolver = fakeResolver{access: identity.Access{Subject: "42", Role: authtoken.RoleUser}}
+	w := do(t, h, "/api/v1/episodes/1/sources", map[string]string{
+		"Authorization": "Bearer good",
+		"X-Device-Id":   "0192f1a2-7c3d-7e4f-8a9b-0c1d2e3f4a5b",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("登录用户选源应 200, 得 %d %s", w.Code, w.Body.String())
+	}
+	if len(svc.calls) != 1 || svc.calls[0].Viewer.UserID != 42 {
+		t.Fatalf("登录用户的 UserID 应透传到领域层, 得 %+v", svc.calls)
+	}
+}
+
+// 无 Bearer（游客 / 未登录）：UserID 为 0，领域层据此按试看 / 墙处理。
+func TestSources_GuestHasZeroUserID(t *testing.T) {
+	svc := &fakeService{}
+	h, _ := newHandlers(svc)
+	h.Resolver = fakeResolver{}
+	w := do(t, h, "/api/v1/episodes/1/sources", map[string]string{"X-Device-Id": "0192f1a2-7c3d-7e4f-8a9b-0c1d2e3f4a5b"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("游客选源应 200, 得 %d", w.Code)
+	}
+	if len(svc.calls) != 1 || svc.calls[0].Viewer.UserID != 0 {
+		t.Fatalf("游客 / 未登录的 UserID 应为 0, 得 %+v", svc.calls)
+	}
+}
+
+// 带无效 / 过期 Bearer：SetIdentity 直接中止，不进入选源。
+func TestSources_InvalidBearerRejected(t *testing.T) {
+	svc := &fakeService{}
+	h, _ := newHandlers(svc)
+	h.Resolver = fakeResolver{err: errs.ErrTokenExpired}
+	w := do(t, h, "/api/v1/episodes/1/sources", map[string]string{"Authorization": "Bearer expired"})
+	if w.Code != http.StatusUnauthorized || codeOf(t, w) != "TOKEN_EXPIRED" {
+		t.Fatalf("带无效令牌应 401 TOKEN_EXPIRED, 得 %d %s", w.Code, w.Body.String())
+	}
+	if len(svc.calls) != 0 {
+		t.Fatalf("无效令牌不应进入选源")
 	}
 }

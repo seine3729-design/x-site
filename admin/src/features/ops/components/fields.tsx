@@ -1,6 +1,7 @@
 import { useId, type ReactNode } from 'react'
 import type { Control, FieldPath, FieldValues } from 'react-hook-form'
-import { Button, Checkbox, Input, Label } from '@/components/ui'
+import { DatePicker } from '@/components/date-picker'
+import { Checkbox, Label } from '@/components/ui'
 import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form'
 
 type BaseProps<T extends FieldValues> = {
@@ -60,7 +61,10 @@ export function CheckboxGroupField<T extends FieldValues, V extends string>({
   )
 }
 
-/** 本地时间（datetime-local）+「清除」按钮。值为 datetime-local 字符串，空表示不填。 */
+/**
+ * 本地时间选择。值为 `yyyy-MM-ddTHH:mm` 字符串（与原来的 datetime-local 一致），空表示不填。
+ * 统一用 `components/date-picker`，面板里自带「清除」。
+ */
 export function DateTimeField<T extends FieldValues>({ control, name, label, description, disabled }: BaseProps<T>) {
   return (
     <FormField
@@ -69,14 +73,15 @@ export function DateTimeField<T extends FieldValues>({ control, name, label, des
       render={({ field }) => (
         <FormItem>
           <FormLabel>{label}</FormLabel>
-          <div className='flex gap-2'>
-            <FormControl>
-              <Input type='datetime-local' placeholder='选填，年-月-日 时:分' disabled={disabled} {...field} />
-            </FormControl>
-            <Button type='button' variant='outline' disabled={disabled || !field.value} onClick={() => field.onChange('')}>
-              清除
-            </Button>
-          </div>
+          <FormControl>
+            <DatePicker
+              mode='datetime'
+              value={field.value ?? ''}
+              onChange={field.onChange}
+              placeholder='选填，请选择日期与时间'
+              disabled={disabled}
+            />
+          </FormControl>
           {description && <FormDescription>{description}</FormDescription>}
           <FormMessage />
         </FormItem>

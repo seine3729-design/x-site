@@ -7,16 +7,13 @@ import { FormDescription, FormField, FormItem, FormLabel, FormMessage, useFormFi
 import { errorMessage } from '@/lib/http'
 import { cn } from '@/lib/utils'
 import { mediaUploadApi, transcodeJobApi, type MediaUpload, type MediaUploadPurpose } from './api'
-import { compressionSummary, percentOf, transcodeProgressText, uploadProgressText } from './progress'
+import { imagePreviewUrl } from './image-preview'
+import { compressionSummary, percentOf, transcodeProgressText, uploadProgressText, type CompressionMode } from './progress'
 
 type UploadState = 'idle' | 'preparing' | 'uploading' | 'processing' | 'ready' | 'failed'
 
+/** 压缩结果的最长边。与服务端的 IMAGE_MAX_SIDE 默认值一致，兜底压缩时在浏览器里用同一个值。 */
 const IMAGE_MAX_SIDE = 2400
-/**
- * 有损 WebP 的质量。0.92 在封面这类照片上肉眼已看不出与原图的差别，
- * 比过去的 0.82 明显更稳（0.82 在渐变与文字边缘会出现可见的块状噪点）。
- */
-const IMAGE_QUALITY = 0.92
 
 function bytes(value: number) {
   if (value < 1024) return `${value} B`
@@ -33,21 +30,50 @@ const JOB_POLL_MS = 2000
  */
 const VIDEO_COMPLETE_TIMEOUT_MS = 300_000
 
-/** 压缩结果。reused 表示原图本身更优，直接上传原文件、没有重新编码（真正无损）。 */
-type Compressed = {
+/**
+ * 浏览器兜底压缩的质量阶梯。从视觉无损往下退，取第一个确实比原图小的结果。
+ *
+ * 固定一个高质量值是上一版「压缩后比原图还大」的直接原因：canvas 先把 JPEG 解码再按 0.92 编码 WebP，
+ * 对已经优化过的照片几乎必然涨体积 —— 既多一次有损，又没有降体积。
+ */
+const LOCAL_QUALITY_STEPS = [0.9, 0.82, 0.72] as const
+
+/** 准备好的上传内容。 */
+type Prepared = {
   blob: Blob
   originalBytes: number
-  reused: boolean
+  mode: CompressionMode
+  /** 服务端优化没用上的原因；为空表示用上了。 */
+  fallbackReason: string
 }
 
 /**
- * 浏览器里把图片压缩成 WebP 再上传。只用 WebP：所有现代浏览器都支持 canvas WebP 编码；
+ * 压缩图片。优先交给服务端的图片优化服务，它按图片内容选量化参数，压缩比和画质都比
+ * 浏览器 canvas 稳定得多；服务未配置、额度用尽或这张图它不认时退回浏览器压缩，不阻塞运营上传。
+ */
+async function prepareImage(file: File, purpose: MediaUploadPurpose): Promise<Prepared> {
+  try {
+    const optimized = await mediaUploadApi.optimizeImage(purpose, file)
+    if (optimized.size > 0) {
+      return { blob: optimized, originalBytes: file.size, mode: 'server', fallbackReason: '' }
+    }
+  } catch (error) {
+    const local = await compressLocally(file)
+    return { ...local, fallbackReason: errorMessage(error) }
+  }
+  const local = await compressLocally(file)
+  return { ...local, fallbackReason: '服务端优化没有返回结果' }
+}
+
+/**
+ * 浏览器里把图片压缩成 WebP。只用 WebP：所有现代浏览器都支持 canvas WebP 编码；
  * AVIF 的 canvas 编码主流浏览器（Chrome / Firefox 桌面）都不支持，前台要 AVIF 由 CDN 实时转（docs/08）。
  *
- * 「尽量无损」的两条：质量取 0.92（视觉无损），并且**原图已经是不超尺寸的 WebP 且比重编码结果更小时直接上传原文件** ——
- * 对已经优化过的 WebP 再编码一次只会既掉质量又可能变大。服务端只认 WebP 文件头，所以这条捷径仅对 WebP 原图成立。
+ * 两条保证不会「压完更大」：沿质量阶梯找第一个小于原图的结果；原图已经是不超尺寸的 WebP
+ * 且仍比所有结果都小时直接上传原文件（服务端只认 WebP 文件头，所以这条捷径仅对 WebP 原图成立）。
+ * 原图是 JPEG/PNG 时必须重编码，哪怕最省的一档仍然更大也只能用它 —— 摘要会如实写出来。
  */
-async function compressImage(file: File): Promise<Compressed> {
+async function compressLocally(file: File): Promise<Omit<Prepared, 'fallbackReason'>> {
   const source = await createImageBitmap(file)
   const oversized = Math.max(source.width, source.height) > IMAGE_MAX_SIDE
   try {
@@ -60,26 +86,37 @@ async function compressImage(file: File): Promise<Compressed> {
     const context = canvas.getContext('2d')
     if (!context) throw new Error('当前浏览器无法创建图片画布')
     context.drawImage(source, 0, 0, width, height)
-    const encoded = await new Promise<Blob>((resolve, reject) =>
-      canvas.toBlob(
-        (blob) => {
-          if (!blob || blob.type !== 'image/webp') {
-            reject(new Error('图片压缩失败，请重试'))
-            return
-          }
-          resolve(blob)
-        },
-        'image/webp',
-        IMAGE_QUALITY
-      )
-    )
-    if (file.type === 'image/webp' && !oversized && file.size <= encoded.size) {
-      return { blob: file, originalBytes: file.size, reused: true }
+
+    let smallest: Blob | null = null
+    for (const quality of LOCAL_QUALITY_STEPS) {
+      const encoded = await encodeWebP(canvas, quality)
+      smallest = encoded
+      if (encoded.size < file.size) break
     }
-    return { blob: encoded, originalBytes: file.size, reused: false }
+    if (!smallest) throw new Error('图片压缩失败，请重试')
+    if (file.type === 'image/webp' && !oversized && file.size <= smallest.size) {
+      return { blob: file, originalBytes: file.size, mode: 'reused' }
+    }
+    return { blob: smallest, originalBytes: file.size, mode: 'local' }
   } finally {
     source.close()
   }
+}
+
+function encodeWebP(canvas: HTMLCanvasElement, quality: number): Promise<Blob> {
+  return new Promise<Blob>((resolve, reject) =>
+    canvas.toBlob(
+      (blob) => {
+        if (!blob || blob.type !== 'image/webp') {
+          reject(new Error('图片压缩失败，请重试'))
+          return
+        }
+        resolve(blob)
+      },
+      'image/webp',
+      quality
+    )
+  )
 }
 
 type ImageUploadControlProps = {
@@ -116,6 +153,7 @@ export function ImageUploadControl({
   const [notice, setNotice] = useState('')
   const [summary, setSummary] = useState('')
   const [preview, setPreview] = useState<string | null>(null)
+  const [brokenPreview, setBrokenPreview] = useState('')
 
   useEffect(
     () => () => {
@@ -123,6 +161,11 @@ export function ImageUploadControl({
     },
     [preview]
   )
+
+  // 本次刚选的文件用本地 blob 预览；打开已有记录时 value 是对象 key，走同源预览代理取回图片。
+  const remotePreview = imagePreviewUrl(value)
+  const previewSrc = preview || remotePreview
+  const previewBroken = !!previewSrc && previewSrc === brokenPreview
 
   async function choose(file?: File) {
     if (!file || disabled || state === 'preparing' || state === 'uploading') return
@@ -135,9 +178,10 @@ export function ImageUploadControl({
       setState('preparing')
       setProgress(0)
       setSummary('')
+      setBrokenPreview('')
       setNotice('正在压缩为 WebP…')
-      const { blob, originalBytes, reused } = await compressImage(file)
-      setSummary(compressionSummary(originalBytes, blob.size, reused))
+      const { blob, originalBytes, mode, fallbackReason } = await prepareImage(file, purpose)
+      setSummary(compressionSummary(originalBytes, blob.size, mode))
       const nextPreview = URL.createObjectURL(blob)
       setPreview((previous) => {
         if (previous) URL.revokeObjectURL(previous)
@@ -156,7 +200,13 @@ export function ImageUploadControl({
       onChange(complete.output_key)
       setProgress(100)
       setState('ready')
-      setNotice(reused ? '原图已是更优的 WebP，按原文件上传（未重新编码）。' : '已上传为 WebP，路径已写入表单。')
+      setNotice(
+        mode === 'reused'
+          ? '原图已是更优的 WebP，按原文件上传（未重新编码）。'
+          : fallbackReason
+            ? `已上传为 WebP（服务端优化未生效，改用浏览器压缩：${fallbackReason}）。`
+            : '已上传为 WebP，路径已写入表单。'
+      )
     } catch (error) {
       setState('failed')
       setNotice(errorMessage(error))
@@ -195,13 +245,23 @@ export function ImageUploadControl({
         <ImagePlus className='size-5 text-muted-foreground' aria-hidden />
         <div className='min-w-0 flex-1'>
           <p className='text-sm font-medium'>{label}</p>
-          <p className='text-xs text-muted-foreground'>选择或拖入图片；上传前在浏览器里压缩为 WebP、最长边 {IMAGE_MAX_SIDE}px。</p>
+          <p className='text-xs text-muted-foreground'>选择或拖入图片；上传前压缩为 WebP、最长边 {IMAGE_MAX_SIDE}px。</p>
         </div>
         <Button type='button' variant='outline' className='h-10' disabled={disabled || busy} onClick={() => fileInput.current?.click()}>
           {busy ? <LoaderCircle className='animate-spin' /> : <Upload />} 选择图片
         </Button>
       </div>
-      {preview && <img src={preview} alt={`${label}上传预览`} className='max-h-40 max-w-full self-start rounded border object-contain' />}
+      {previewSrc && !previewBroken && (
+        <img
+          src={previewSrc}
+          alt={`${label}预览`}
+          loading='lazy'
+          decoding='async'
+          className='max-h-40 max-w-full self-start rounded border bg-muted object-contain'
+          onError={() => setBrokenPreview(previewSrc)}
+        />
+      )}
+      {previewBroken && <p className='text-xs text-muted-foreground'>图片读取失败，可能已从存储源删除或当前图片主存储已切换。</p>}
       {summary && <p className='text-xs tabular-nums text-muted-foreground'>{summary}</p>}
       {value && <code className='max-w-full overflow-hidden text-ellipsis whitespace-nowrap rounded bg-muted px-2 py-1 text-xs'>{value}</code>}
       <div className='flex items-center gap-2 text-xs text-muted-foreground' aria-live='polite'>
@@ -228,6 +288,7 @@ export function ImageUploadControl({
               setState('idle')
               setNotice('')
               setSummary('')
+              setBrokenPreview('')
             }}
           >
             <Trash2 /> 移除
@@ -310,7 +371,7 @@ export function ImageUploadField<T extends FieldValues>({
             disabled={disabled}
             required={required}
           />
-          <FormDescription>图片会在浏览器里压缩为 WebP 后上传，不以原图上传。</FormDescription>
+          <FormDescription>图片会先压缩为 WebP 再上传，不以原图上传。</FormDescription>
           <FormMessage />
         </FormItem>
       )}

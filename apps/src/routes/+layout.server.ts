@@ -1,5 +1,6 @@
 import { CDN_ASSET_PREFIX, IMAGE_BASE_URLS } from '$app/env/private';
 import type { AgeGate, PublicMenu, SiteAddresses } from '#lib/api/types.ts';
+import { mergeDomains } from '#lib/media/domains.ts';
 import { callContext } from '#lib/server/context.ts';
 import { CATALOGS } from '#lib/server/i18n-catalogs.ts';
 import { orFallback, publicApi } from '#lib/server/public-api.ts';
@@ -58,7 +59,9 @@ export const load: LayoutServerLoad = async (event) => {
 		menus,
 		footerPages,
 		addresses: addresses(config.addresses),
-		imageBases: IMAGE_BASE_URLS,
+		// 图片线路域名：后台线路表随配置下发（docs/04 F），部署配置 IMAGE_BASE_URLS 作为补充与兜底。
+		// 这个列表为空时，接口返回的相对 key（后台上传的封面）拼不出地址，前台只会画占位图。
+		imageBases: mergeDomains(config.media?.image_bases, IMAGE_BASE_URLS),
 		announcements
 	};
 

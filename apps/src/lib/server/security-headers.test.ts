@@ -78,4 +78,19 @@ describe('documentSecurityHeaders', () => {
 		// 末尾斜杠不要带进来
 		expect(csp).not.toContain('https://cdn.example/ ');
 	});
+
+	it('CDN 前缀带路径时必须以斜杠结尾（否则 CSP 只匹配那一个路径，产物全被拦）', () => {
+		const csp = find(documentSecurityHeaders(true, 'https://cdn.example/apps', []), 'content-security-policy')!;
+		expect(directive(csp, 'script-src')).toBe("script-src 'self' 'unsafe-inline' https://cdn.example/apps/");
+		expect(directive(csp, 'connect-src')).toBe("connect-src 'self' https://cdn.example/apps/");
+		// 末尾多写的斜杠不会叠成两个
+		const same = find(documentSecurityHeaders(true, 'https://cdn.example/apps/', []), 'content-security-policy')!;
+		expect(directive(same, 'script-src')).toBe("script-src 'self' 'unsafe-inline' https://cdn.example/apps/");
+	});
+
+	it('CDN 前缀填错时整条 CSP 不受影响', () => {
+		const csp = find(documentSecurityHeaders(true, '不是地址', []), 'content-security-policy')!;
+		expect(directive(csp, 'script-src')).toBe("script-src 'self' 'unsafe-inline'");
+		expect(directive(csp, 'font-src')).toBe("font-src 'self'");
+	});
 });

@@ -11,7 +11,6 @@ import (
 	"uuid"
 
 	"github.com/gin-gonic/gin"
-	"golang.org/x/sync/errgroup"
 
 	mediadom "xsite/service/internal/domain/media"
 	dom "xsite/service/internal/domain/upload"
@@ -50,7 +49,8 @@ type Handlers struct {
 	Svc    uploadService
 	Media  episodeMediaService
 	Stores uploadstore.Resolver // 后台配置的 storage_provider 主源 / 已固定源
-	Source objectStore          // 私有转码暂存桶（不经 CDN）
+	Source objectStore          // 私有转码暂存桶（不经 CDN），同时是视频源文件的唯一落点
+	Images ImageOptimizer       // 外部图片优化服务；为 nil 时优化接口回 503，浏览器退回本地压缩
 }
 
 // 使用编译期断言确保 app 只能注入具有所需能力的服务和桶。
@@ -237,34 +237,26 @@ func (h *Handlers) PutContent(c *gin.Context) {
 
 // writeContent 把请求体写入会话登记的对象 key。
 //
-// 视频在收请求体的同时并行写入私有转码暂存桶：请求体只读一遍，两路分片上传各自进行，
-// 总耗时是两者中较慢的那个。原先的做法是先只写主存储，再在完成阶段把整个源文件下载回来重新上传，
-// 一个 70 MB 的分集因此要跑「上行 → 下行 → 上行」三趟，完成阶段还会撞上前端与网关的超时。
+// 图片写配置的主存储源（它们要经 CDN 分发给访客）。**视频源文件只写私有转码暂存桶**：
+// 它是 `private, no-store`、不进 CDN，唯一的读者是转码 worker（`transcode_job.source_key` 就是暂存 key），
+// 过去在主存储里留的那一份没有任何代码路径会读。为它多付一次完整上行，在跨公网的主存储上
+// 实测直接把上传拖垮：30 MB 切 4 片并发传 Cloudflare R2，单个 UploadPart 在途超过两分钟被对端断连，
+// 重试用尽后整个请求 500（见 docs/03 第 9.6a 节）。
 func (h *Handlers) writeContent(ctx context.Context, store objectStore, a dom.Asset, body io.Reader) error {
-	opt := blob.PutOptions{ContentType: a.MIME, CacheControl: cacheControl(a.Kind)}
-	if a.Kind != dom.KindVideo || h.Source == nil {
-		return store.PutStream(ctx, a.SourceKey, body, a.SizeBytes, opt)
+	if a.Kind != dom.KindVideo {
+		return store.PutStream(ctx, a.SourceKey, body, a.SizeBytes,
+			blob.PutOptions{ContentType: a.MIME, CacheControl: cacheControl(a.Kind)})
 	}
-	pr, pw := io.Pipe()
-	g, gctx := errgroup.WithContext(ctx)
-	g.Go(func() error {
-		err := store.PutStream(gctx, a.SourceKey, io.TeeReader(body, pw), a.SizeBytes, opt)
-		// 关掉写端：成功时让暂存那一路读到 EOF，失败时让它带着同一个错误立刻收尾，不会卡在等数据上。
-		_ = pw.CloseWithError(err)
-		return err
-	})
-	g.Go(func() error {
-		// 关掉读端：暂存这一路失败时让 TeeReader 的写入立即报错，主存储那一路不会一直阻塞。
-		defer pr.Close()
-		return h.Source.PutStream(gctx, dom.StageKey(a.ProviderID, a.SourceKey), pr, a.SizeBytes,
-			blob.PutOptions{ContentType: a.MIME, CacheControl: "private, no-store"})
-	})
-	return g.Wait()
+	if h.Source == nil {
+		return errs.ErrUnavailable.WithMessage("转码暂存桶未配置")
+	}
+	return h.Source.PutStream(ctx, dom.StageKey(a.ProviderID, a.SourceKey), body, a.SizeBytes,
+		blob.PutOptions{ContentType: a.MIME, CacheControl: "private, no-store"})
 }
 
-// stageVideo 确认转码源已在私有暂存桶里就位。
-// 正常情况下 writeContent 在收请求体时已经写好，这里只核对元数据；
-// 只有历史会话（上传时还没有并行写暂存）或暂存对象已被清理时，才退回从主存储复制一遍。
+// stageVideo 确认转码源已在私有暂存桶里就位，并核对一次大小与类型。
+// 正常情况下 writeContent 已经直接写在那里，这里只查元数据；
+// 只有更早版本留下的会话（源文件写在主存储）才退回复制一次，让它们仍能完成提交。
 func (h *Handlers) stageVideo(ctx context.Context, source objectStore, a dom.Asset) error {
 	if h.Source == nil {
 		return errs.ErrUnavailable.WithMessage("转码暂存桶未配置")
@@ -282,6 +274,9 @@ func (h *Handlers) stageVideo(ctx context.Context, source objectStore, a dom.Ass
 	}
 	body, info, err := source.Get(ctx, a.SourceKey)
 	if err != nil {
+		if errors.Is(err, blob.ErrNotFound) {
+			return errs.ErrBadRequest.WithMessage("上传的视频文件已不存在，请重新上传")
+		}
 		return err
 	}
 	defer body.Close()
@@ -315,18 +310,20 @@ func (h *Handlers) Complete(c *gin.Context) {
 		respond.Error(c, err)
 		return
 	}
-	info, err := store.Head(c.Request.Context(), a.SourceKey)
-	if err != nil {
-		h.discardFailedObject(c.Request.Context(), store, a, "上传对象读取失败")
-		respond.Error(c, err)
-		return
-	}
-	if info.Size != a.SizeBytes || normalizedMIME(info.ContentType) != a.MIME {
-		h.discardFailedObject(c.Request.Context(), store, a, "上传对象元数据不一致")
-		respond.Error(c, errs.ErrBadRequest.WithMessage("对象存储中的文件与申请信息不一致"))
-		return
-	}
 	if a.Kind == dom.KindImage {
+		// 图片写在主存储：再核对一次对象存储里的元数据，再验文件头。
+		// 这里刻意不写 `info, err :=`：那样会在本块内遮蔽外层的 err，让后面 CompleteImage 的失败漏到成功分支。
+		info, headErr := store.Head(c.Request.Context(), a.SourceKey)
+		if headErr != nil {
+			h.discardFailedObject(c.Request.Context(), store, a, "上传对象读取失败")
+			respond.Error(c, headErr)
+			return
+		}
+		if info.Size != a.SizeBytes || normalizedMIME(info.ContentType) != a.MIME {
+			h.discardFailedObject(c.Request.Context(), store, a, "上传对象元数据不一致")
+			respond.Error(c, errs.ErrBadRequest.WithMessage("对象存储中的文件与申请信息不一致"))
+			return
+		}
 		if err := verifyImage(c.Request.Context(), store, a); err != nil {
 			h.discardFailedObject(c.Request.Context(), store, a, "图片文件头校验失败")
 			respond.Error(c, err)

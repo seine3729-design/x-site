@@ -316,7 +316,7 @@ function TopicDialog({ topic, onClose }: { topic?: Topic; onClose: () => void })
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className='max-h-[90vh] overflow-y-auto sm:max-w-2xl'>
+      <DialogContent className='sm:max-w-2xl'>
         <DialogHeader>
           <DialogTitle>{creating ? '新建专题' : `编辑专题：${topic.title}`}</DialogTitle>
           <DialogDescription>前台专题页地址为 /topics/&lt;slug&gt;。</DialogDescription>
@@ -533,7 +533,7 @@ function TopicDramasDialog({ topic, editable, onClose }: { topic: Topic; editabl
   const detail = useQuery(topicQuery(topic.id))
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className='max-h-[90vh] overflow-y-auto sm:max-w-2xl'>
+      <DialogContent className='sm:max-w-2xl'>
         <DialogHeader>
           <DialogTitle>选剧：{topic.title}</DialogTitle>
           <DialogDescription>按列表顺序展示；保存后未列出的剧移出专题。回收站中的剧不显示，还原后回到原位置。</DialogDescription>

@@ -6,6 +6,7 @@ import { toast } from 'sonner'
 import { errorMessage } from '@/lib/http'
 import { useCan } from '@/stores/auth-store'
 import { ConfirmDialog } from '@/components/confirm-dialog'
+import { DatePicker } from '@/components/date-picker'
 import { NoPermission } from '@/components/module-placeholder'
 import {
   Badge,
@@ -184,26 +185,24 @@ export function ImportPage() {
             <label htmlFor='import-from' className='text-sm whitespace-nowrap text-muted-foreground'>
               从
             </label>
-            <Input
+            <DatePicker
               id='import-from'
-              type='date'
               className='h-9 w-36'
+              placeholder='开始日期'
+              max={search.to || undefined}
               value={search.from ?? ''}
-              onChange={(e) =>
-                void navigate({ search: (p) => ({ ...p, from: e.target.value || undefined, page: undefined }) })
-              }
+              onChange={(v) => void navigate({ search: (p) => ({ ...p, from: v || undefined, page: undefined }) })}
             />
             <label htmlFor='import-to' className='text-sm whitespace-nowrap text-muted-foreground'>
               到
             </label>
-            <Input
+            <DatePicker
               id='import-to'
-              type='date'
               className='h-9 w-36'
+              placeholder='结束日期'
+              min={search.from || undefined}
               value={search.to ?? ''}
-              onChange={(e) =>
-                void navigate({ search: (p) => ({ ...p, to: e.target.value || undefined, page: undefined }) })
-              }
+              onChange={(v) => void navigate({ search: (p) => ({ ...p, to: v || undefined, page: undefined }) })}
             />
             {(search.from || search.to) && (
               <Button variant='ghost' className='h-9' onClick={() => void navigate({ search: {} })}>
@@ -431,7 +430,7 @@ function LogRow({ log }: { log: ImportLog }) {
       <TableCell className='pl-4 text-sm whitespace-nowrap tabular-nums'>
         {new Date(log.created_at).toLocaleString('zh-CN', { hour12: false })}
       </TableCell>
-      <TableCell className='max-w-[14rem] truncate text-sm' title={log.file_name}>
+      <TableCell className='max-w-56 truncate text-sm' title={log.file_name}>
         {log.file_name || '—'}
       </TableCell>
       <TableCell className='text-sm'>{log.source || '—'}</TableCell>

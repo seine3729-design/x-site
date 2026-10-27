@@ -1,7 +1,10 @@
 <script lang="ts">
 	import { onMount, type Snippet } from 'svelte';
+	import { page } from '$app/state';
 	import { clock } from '#lib/format.ts';
+	import AdSlot from '#lib/home/AdSlot.svelte';
 	import { getI18n } from '#lib/i18n/context.ts';
+	import { splitLocale } from '#lib/i18n/locales.ts';
 	import Icon from '#lib/ui/Icon.svelte';
 	import AccessWall from './AccessWall.svelte';
 	import { SPEEDS, type PlayerController } from './controller.svelte.ts';
@@ -48,6 +51,8 @@
 	}: Props = $props();
 
 	const i18n = getI18n();
+	// 试看提示条点击去登录 / 开通会员，登录后回到当前页（去掉语言前缀，与 AccessWall 一致）
+	const trialNext = $derived(encodeURIComponent(splitLocale(page.url.pathname).path + page.url.search));
 	let video = $state<HTMLVideoElement>();
 	let frame = $state<HTMLDivElement>();
 	let controlsVisible = $state(true);
@@ -55,6 +60,33 @@
 	let feedback = $state<{ id: number; text: string; icon?: 'play' | 'pause' | 'volume-x' | 'volume-2' | 'gauge' } | null>(null);
 	let swipeHint = $state<string | null>(null);
 	let fullscreen = $state(false);
+	/**
+	 * 播放框是否太窄：竖屏视频在矮窗口里只有二三百像素宽，这时要收起非必要控件（音量条）。
+	 * 断点只能按**播放器宽度**量，不能用 `xl:` 这类视口断点——视口 1280 时播放框实测只有 295px，
+	 * 音量条照样显示，整行需要 339px 塞进 263px，时间就被挤到换行。
+	 */
+	let narrow = $state(false);
+	/** 是否暂停过：暂停贴片广告位只在第一次暂停时挂载，之后靠显隐切换，不重复取素材 */
+	let pausedOnce = $state(false);
+	$effect(() => {
+		if (player.phase === 'paused') {
+			pausedOnce = true;
+		}
+	});
+	$effect(() => {
+		const el = frame;
+		if (!el || typeof ResizeObserver !== 'function') {
+			return;
+		}
+		const observer = new ResizeObserver((entries) => {
+			const entry = entries[0];
+			if (entry) {
+				narrow = entry.contentRect.width < 380;
+			}
+		});
+		observer.observe(el);
+		return () => observer.disconnect();
+	});
 	let hideTimer: ReturnType<typeof setTimeout> | undefined;
 	let feedbackTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -151,6 +183,11 @@
 			return;
 		}
 		scrubbing = false;
+		// 拖进锁定段（试看边界之后）不跳转：scrubbing 置 false 后滑块自动弹回当前播放位置，
+		// 试看片段继续播，播到边界再由 AccessWall 弹登录 / 会员墙。可播区间内正常 seek。
+		if (scrubTime > playableMax) {
+			return;
+		}
 		player.seek(scrubTime);
 	}
 
@@ -243,8 +280,15 @@
 
 	/** 进度条显示用的时间：拖动中跟手指走，否则跟播放位置 */
 	const shownTime = $derived(scrubbing ? scrubTime : player.currentTime);
-	const progress = $derived(player.duration > 0 ? (shownTime / player.duration) * 100 : 0);
-	const bufferedPct = $derived(player.duration > 0 ? (player.buffered / player.duration) * 100 : 0);
+	// 进度条按「整集时长」显示而不是试看秒数：试看清单只含前 trial_sec 秒，video.duration 只有试看长度。
+	// displayDuration = 进度条总长与时间分母；playableMax = 滑块可落到的最远位置（试看片段结束处）；
+	// lockedPct = 锁定段（试看边界→整集末尾）在进度条上的起点百分比。整集时长未知（老产物 duration_sec=0）时回退到 video.duration。
+	const trialLocked = $derived(player.trialSec > 0 && player.fullDuration > player.duration && player.duration > 0);
+	const displayDuration = $derived(player.trialSec > 0 && player.fullDuration > 0 ? player.fullDuration : player.duration);
+	const playableMax = $derived(trialLocked ? player.duration : displayDuration);
+	const lockedPct = $derived(trialLocked && displayDuration > 0 ? (player.duration / displayDuration) * 100 : 100);
+	const progress = $derived(displayDuration > 0 ? (shownTime / displayDuration) * 100 : 0);
+	const bufferedPct = $derived(displayDuration > 0 ? (player.buffered / displayDuration) * 100 : 0);
 	const showSpinner = $derived(player.phase === 'loading' || (player.waiting && player.phase === 'playing'));
 	const lineLabel = (index: number) => player.lines[index]?.name || i18n.t('player.lineN', { n: index + 1 });
 </script>
@@ -334,6 +378,14 @@
 		</div>
 	{/if}
 
+	<!-- 暂停贴片广告位（docs/04 C.5）：第一次暂停时才挂载（避免每次暂停都重新取素材），
+	     之后用 hidden 收起——display:none 时 IntersectionObserver 不会误报曝光 -->
+	{#if pausedOnce && !player.wall}
+		<div class="absolute inset-x-4 bottom-28 z-20 mx-auto max-w-md lg:bottom-20 {player.phase === 'paused' ? '' : 'hidden'}">
+			<AdSlot slot="pause" />
+		</div>
+	{/if}
+
 	{#if countdown !== null && hasNext}
 		<div class="absolute inset-x-4 bottom-24 z-20 mx-auto flex max-w-sm items-center gap-3 rounded-2xl bg-black/70 p-3 text-white backdrop-blur lg:bottom-20">
 			<span class="grid size-10 shrink-0 place-items-center rounded-full bg-brand text-lg font-bold tabular">{countdown}</span>
@@ -341,6 +393,17 @@
 			<button type="button" class="btn btn-sm btn-glass" onclick={oncancelcountdown}>{i18n.t('common.cancel')}</button>
 			<button type="button" class="btn btn-sm btn-primary" onclick={onnext}>{i18n.t('player.playNext')}</button>
 		</div>
+	{/if}
+
+	<!-- 试看中提示（游客拿到的清单只含前 trial_sec 秒）：试看片段播放全程显示，点击去登录 / 开通会员；播到头由 AccessWall 弹墙 -->
+	{#if player.trialSec > 0 && !player.trialEnded && !player.wall}
+		<a
+			href={i18n.path(`/${player.access === 'vip' ? 'vip' : 'login'}?next=${trialNext}`)}
+			class="pointer-events-auto absolute start-1/2 top-[12%] z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-black/70 px-4 py-2 text-sm font-medium text-white backdrop-blur rtl:translate-x-1/2"
+		>
+			<Icon name={player.access === 'vip' ? 'crown' : 'lock'} size={14} />
+			{i18n.t(player.access === 'vip' ? 'player.trialNoticeVip' : 'player.trialNotice')}
+		</a>
 	{/if}
 
 	{#if player.wall}
@@ -359,16 +422,19 @@
 			<div class="absolute inset-x-0 top-1/2 -translate-y-1/2 rounded-full bg-white/25 transition-[height] {scrubbing ? 'h-1.5' : 'h-1'}">
 				<div class="absolute inset-y-0 start-0 rounded-full bg-white/40" style:width="{bufferedPct}%"></div>
 				<div class="absolute inset-y-0 start-0 rounded-full bg-brand" style:width="{progress}%"></div>
+				{#if lockedPct < 100}
+					<div class="locked-zone absolute inset-y-0 end-0 rounded-e-full" style:width="{100 - lockedPct}%" aria-hidden="true"></div>
+				{/if}
 			</div>
 			<input
 				type="range"
 				min="0"
-				max={player.duration || 0}
+				max={displayDuration || 0}
 				step="0.1"
 				value={shownTime}
 				class="seek seek-touch absolute inset-0 w-full cursor-pointer appearance-none bg-transparent"
 				aria-label={i18n.t('player.seek')}
-				aria-valuetext={`${clock(shownTime)} / ${clock(player.duration)}`}
+				aria-valuetext={`${clock(shownTime)} / ${clock(displayDuration)}`}
 				oninput={onScrubInput}
 				onchange={onScrubCommit}
 				onpointerup={onScrubCommit}
@@ -377,11 +443,12 @@
 		</div>
 	</div>
 	{#if scrubbing}
-		<!-- 拖动中在画面中间显示目标时间，手指不用盯着底部细条 -->
+		<!-- 拖动中在画面中间显示目标时间，手指不用盯着底部细条；拖进锁定段（试看边界之后）时显示锁标，提示到此为止 -->
 		<div
-			class="pointer-events-none absolute top-1/2 left-1/2 z-20 -translate-x-1/2 -translate-y-1/2 rounded-2xl bg-black/80 px-4 py-2 text-base font-semibold text-white tabular lg:hidden"
+			class="pointer-events-none absolute top-1/2 left-1/2 z-20 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1.5 rounded-2xl bg-black/80 px-4 py-2 text-base font-semibold text-white tabular lg:hidden"
 		>
-			{clock(scrubTime)} <span class="text-white/60">/ {clock(player.duration)}</span>
+			{#if scrubTime > playableMax}<Icon name="lock" size={16} class="text-white/80" />{/if}
+			{clock(scrubTime)} <span class="text-white/60">/ {clock(displayDuration)}</span>
 		</div>
 	{/if}
 
@@ -396,23 +463,28 @@
 			<div class="absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-white/20 transition-[height] group-hover/seek:h-1.5">
 				<div class="absolute inset-y-0 start-0 rounded-full bg-white/30" style:width="{bufferedPct}%"></div>
 				<div class="absolute inset-y-0 start-0 rounded-full bg-brand" style:width="{progress}%"></div>
+				{#if lockedPct < 100}
+					<div class="locked-zone absolute inset-y-0 end-0 rounded-e-full" style:width="{100 - lockedPct}%" aria-hidden="true"></div>
+				{/if}
 			</div>
 			<input
 				type="range"
 				min="0"
-				max={player.duration || 0}
+				max={displayDuration || 0}
 				step="0.1"
 				value={shownTime}
 				class="seek absolute inset-0 w-full cursor-pointer appearance-none bg-transparent"
 				aria-label={i18n.t('player.seek')}
-				aria-valuetext={`${clock(shownTime)} / ${clock(player.duration)}`}
+				aria-valuetext={`${clock(shownTime)} / ${clock(displayDuration)}`}
 				oninput={onScrubInput}
 				onchange={onScrubCommit}
 				onpointerup={onScrubCommit}
 				onpointercancel={onScrubCommit}
 			/>
 		</div>
-		<div class="flex items-center gap-1">
+		<!-- 竖屏视频在矮窗口里只有二三百像素宽，控制条必须在任何宽度都不换行：
+		     每一项都 shrink-0（见 <style> 里的 .ctl），时间用 nowrap，否则时间会在 span 内部折成两行 -->
+		<div class="flex items-center {narrow ? 'gap-0.5' : 'gap-1'}">
 			<button type="button" class="ctl" aria-label={i18n.t(player.phase === 'playing' ? 'player.pause' : 'player.play')} onclick={() => player.toggle()}>
 				<Icon name={player.phase === 'playing' ? 'pause' : 'play'} size={20} filled strokeWidth={0} />
 			</button>
@@ -423,8 +495,10 @@
 					<Icon name="skip-forward" size={19} filled strokeWidth={1.75} />
 				</button>
 			{/if}
-			<span class="ms-1 text-xs text-white/85 tabular">{clock(shownTime)} / {clock(player.duration)}</span>
-			<span class="flex-1"></span>
+			<span class="ms-1 shrink-0 text-[11px] whitespace-nowrap text-white/85 tabular xl:text-xs">
+				{clock(shownTime)} / {clock(displayDuration)}
+			</span>
+			<span class="min-w-1 flex-1"></span>
 			<button
 				type="button"
 				class="ctl"
@@ -433,16 +507,18 @@
 			>
 				<Icon name={player.muted || player.volume === 0 ? 'volume-x' : 'volume-2'} size={19} />
 			</button>
-			<input
-				type="range"
-				min="0"
-				max="1"
-				step="0.05"
-				value={player.muted ? 0 : player.volume}
-				class="volume hidden w-16 cursor-pointer accent-white xl:block"
-				aria-label={i18n.t('player.volume')}
-				oninput={(event) => player.setVolume(Number(event.currentTarget.value))}
-			/>
+			{#if !narrow}
+				<input
+					type="range"
+					min="0"
+					max="1"
+					step="0.05"
+					value={player.muted ? 0 : player.volume}
+					class="volume w-16 shrink-0 cursor-pointer accent-white"
+					aria-label={i18n.t('player.volume')}
+					oninput={(event) => player.setVolume(Number(event.currentTarget.value))}
+				/>
+			{/if}
 			<div class="relative">
 				<button
 					type="button"
@@ -544,9 +620,12 @@
 <style>
 	.ctl {
 		display: inline-grid;
+		/* 控制条在窄播放框里不允许被压缩，否则图标互相重叠、时间被挤到换行 */
+		flex-shrink: 0;
 		place-items: center;
-		width: 2.25rem;
-		height: 2.25rem;
+		/* 固定 34px：别按视口断点放大，窄播放框（竖屏视频 ~295px）里会把控制条挤到换行 */
+		width: 2.125rem;
+		height: 2.125rem;
 		border-radius: 9999px;
 		transition: background-color 150ms;
 	}
@@ -581,6 +660,16 @@
 	.seek::-webkit-slider-runnable-track,
 	.seek::-moz-range-track {
 		background: transparent;
+	}
+	/* 试看锁定段：进度条上试看边界之后的一段用斜纹画出，表示「此段需登录 / 开通会员解锁」，与可播区间区分 */
+	.locked-zone {
+		background-image: repeating-linear-gradient(
+			-45deg,
+			rgb(255 255 255 / 0.3) 0,
+			rgb(255 255 255 / 0.3) 2px,
+			transparent 2px,
+			transparent 5px
+		);
 	}
 	/* 触屏进度条：横向拖动自己处理，不交给浏览器（否则会被刷剧流的竖向 scroll-snap 抢走手势）。
 	   滑块常驻可见、比电脑端大一圈，方便手指按住。 */

@@ -327,7 +327,7 @@ function KeyDialog({
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className='max-h-[90vh] overflow-y-auto sm:max-w-2xl'>
+      <DialogContent className='sm:max-w-2xl'>
         <DialogHeader>
           <DialogTitle>{apiKey ? `编辑「${apiKey.name}」` : '生成开放接口密钥'}</DialogTitle>
           <DialogDescription>

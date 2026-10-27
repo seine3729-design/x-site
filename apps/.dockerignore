@@ -3,6 +3,8 @@
 node_modules
 .svelte-kit
 build
+# 编排文件只给 Dokploy / docker compose 读，进了上下文只会让 `COPY . .` 的缓存白白失效
+docker-compose.yml
 .env
 .env.local
 .env.*.local

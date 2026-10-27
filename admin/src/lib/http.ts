@@ -205,6 +205,44 @@ export async function postForm<T>(
   return body.data as T
 }
 
+/**
+ * 提交二进制、取回二进制（后台图片优化）：复用 Cookie、CSRF、统一错误类型与 API 前缀。
+ *
+ * 和 `uploadBinary` 的区别是这里要的是响应体本身而不是 JSON 包。失败时服务端仍返回标准响应包，
+ * 所以按 JSON 解析出业务码；超时要由调用方放宽（服务端要等外部优化服务往返）。
+ */
+export async function postBinaryForBlob(
+  path: string,
+  body: Blob,
+  options: { contentType: string; query?: Query; timeoutMs?: number; signal?: AbortSignal }
+): Promise<Blob> {
+  const headers = new Headers({ 'content-type': options.contentType })
+  if (csrfToken) headers.set('x-csrf-token', csrfToken)
+
+  const timeout = AbortSignal.timeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS)
+  const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout
+
+  let response: Response
+  try {
+    response = await fetch(buildUrl(path, options.query), { method: 'POST', body, headers, credentials: 'include', signal })
+  } catch (error) {
+    if (options.signal?.aborted) throw error
+    throw new HttpError(0, 'NETWORK', '网络异常或请求超时，请稍后重试')
+  }
+
+  const requestId = response.headers.get('x-request-id') ?? undefined
+  if (!response.ok) {
+    const envelope = (await response.json().catch(() => null)) as Envelope<never> | null
+    throw new HttpError(
+      response.status,
+      envelope?.code ?? 'INTERNAL',
+      envelope?.message ?? `请求失败（${response.status}）`,
+      envelope?.request_id ?? requestId
+    )
+  }
+  return await response.blob()
+}
+
 /** 原始二进制上传（仅后台受会话保护的上传会话）：仍复用 Cookie、CSRF、统一错误类型与 API 前缀。 */
 export type BinaryUploadOptions = {
   contentType: string

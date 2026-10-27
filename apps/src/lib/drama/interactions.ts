@@ -49,22 +49,4 @@ export async function setLike(type: 'drama' | 'episode', id: number, on: boolean
 	}
 }
 
-/** 系统分享（手机）或复制链接；返回 'shared' | 'copied' | 'failed' */
-export async function shareLink(title: string, url: string): Promise<'shared' | 'copied' | 'failed'> {
-	if (typeof navigator.share === 'function' && matchMedia('(pointer: coarse)').matches) {
-		try {
-			await navigator.share({ title, url });
-			return 'shared';
-		} catch (err) {
-			if (err instanceof DOMException && err.name === 'AbortError') {
-				return 'shared';
-			}
-		}
-	}
-	try {
-		await navigator.clipboard.writeText(url);
-		return 'copied';
-	} catch {
-		return 'failed';
-	}
-}
+

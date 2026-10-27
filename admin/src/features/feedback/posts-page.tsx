@@ -277,7 +277,7 @@ function PostDialog({
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className='max-h-[90vh] overflow-y-auto sm:max-w-2xl'>
+      <DialogContent className='sm:max-w-2xl'>
         <DialogHeader>
           <DialogTitle>{post ? `编辑「${post.title}」` : '新建项目动态'}</DialogTitle>
           <DialogDescription>正文支持换行与简单 Markdown。状态设为「已发布」后立刻出现在前台动态流。</DialogDescription>

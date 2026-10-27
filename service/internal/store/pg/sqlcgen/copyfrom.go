@@ -47,6 +47,8 @@ func (r iteratorForInsertEvents) Err() error {
 }
 
 // 埋点采集（docs/03 第 8.1 节，S4-1）：批量 COPY 进 event_raw 分区表。
+// 汇总（metric_*，复杂聚合 + ON CONFLICT）与分区维护（动态 DDL）sqlc 不支持，
+// 手写在 store/pg/analytics.go（参数化 pool.Exec），不经 sqlc。
 func (q *Queries) InsertEvents(ctx context.Context, arg []InsertEventsParams) (int64, error) {
 	return q.db.CopyFrom(ctx, []string{"event_raw"}, []string{"occurred_at", "event_type", "device_id", "user_id", "drama_id", "episode_id", "client", "region", "isp", "props"}, &iteratorForInsertEvents{rows: arg})
 }

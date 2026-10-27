@@ -372,7 +372,7 @@ function BlockDialog({ item, page, pages, onClose }: { item?: Block; page?: stri
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className='max-h-[90vh] overflow-y-auto sm:max-w-2xl'>
+      <DialogContent className='sm:max-w-2xl'>
         <DialogHeader>
           <DialogTitle>{creating ? '新建区块' : `编辑区块 #${item.id}`}</DialogTitle>
           <DialogDescription>新建或改页面时排在该页面的末尾，顺序随后在列表里拖动调整。</DialogDescription>

@@ -12,7 +12,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge, Button, Checkbox, Input, Switch } from '@/components/ui'
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form'
 import { SelectDropdown } from '@/components/select-dropdown'
-import { LoadError, PageHeading } from '@/features/access/shared'
+import { PageHeading } from '@/features/access/shared'
 import {
   billingApi,
   billingKeys,
@@ -69,7 +69,17 @@ export function VIPPlansPage() {
   const plans = useQuery({ ...vipPlansQuery, enabled: visible })
 
   if (!visible) return <NoPermission title='会员套餐' />
-  if (plans.isError) return <LoadError onRetry={() => void plans.refetch()} />
+  if (plans.isError) {
+    return (
+      <div role='alert' className='rounded-md border border-destructive/40 p-4 text-sm'>
+        <p className='font-medium'>数据加载失败。</p>
+        <p className='mt-1 text-muted-foreground'>{errorMessage(plans.error)}</p>
+        <button type='button' className='mt-2 font-medium text-primary underline-offset-4 hover:underline' onClick={() => void plans.refetch()}>
+          重试
+        </button>
+      </div>
+    )
+  }
 
   return (
     <div className='flex flex-col gap-4'>

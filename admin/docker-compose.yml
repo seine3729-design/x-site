@@ -1,0 +1,108 @@
+# 运营后台（admin/）在 Dokploy 上的编排。域名 admin.duanju66.cc。
+#
+# Dokploy 里怎么用：
+#   1. 新建 Compose 服务，Compose Type 选 Docker Compose
+#   2. Provider 选 GitHub/Git，分支 main，Compose Path 填 ./admin/docker-compose.yml
+#   3. Environment 标签页填下面的 R2 四项（和另外两端共用同一对密钥即可），然后 Deploy
+#
+# **先部署 service/docker-compose.yml**：`https://admin.duanju66.cc/api/admin/*` 的路由挂在
+# 后端那个容器上（Traefik 的标签只能挂在要回源的容器上），本编排只负责页面本身。
+#
+#   浏览器 ──┬─ /assets/*      ─────────────→ cdn.duanju66.cc ─→ R2
+#            ├─ /api/admin/*   ─→ Traefik ─→ xsite-service:8080   （service 那份编排里定义）
+#            └─ 其余（index.html、favicon）─→ Traefik ─→ admin:8080
+#
+# **index.html 必须由本域名发出，不能搬到 CDN**：会话是 HttpOnly Cookie，后端还要校验
+# Origin 白名单与 CSRF（docs/03 第 2.3 节），页面和 /api/admin 必须同源。
+# 只有带内容哈希的 assets/ 走 CDN，由构建期的 ADMIN_ASSET_BASE 决定 —— 所以**换 CDN 域名要重新构建**。
+
+# 两个服务用同一个构建上下文、同一个构建参数，只是取不同的阶段，
+# 所以共享的那几层只构建一次（第二个是缓存命中）。
+#
+# ADMIN_ASSET_BASE 末尾必须带斜杠：Vite 直接把它拼在资源相对路径前面。
+# 它要和 assets 服务上传到的位置严格对应：
+#   ADMIN_ASSET_BASE = https://<CDN_HOST>/<CDN_ASSETS_PREFIX>/
+#   对象键           = <CDN_ASSETS_PREFIX>/assets/...
+x-build-args: &build-args
+  ADMIN_ASSET_BASE: https://${CDN_HOST:-cdn.duanju66.cc}/${CDN_ASSETS_PREFIX:-admin}/
+
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: '20m'
+      max-file: '5'
+
+services:
+  # ------------------------------------------------------------------ 一次性：产物上 R2
+  # 和 admin 共用同一段 build，所以上传的产物与正在运行的那一版是同一次构建的，
+  # 内容哈希不可能对不上（两次独立构建对不上时，页面会去 CDN 取一个不存在的文件名，
+  # 而且只在生产复现）。不删远端旧对象，清理靠 R2 的生命周期规则（admin/ 前缀 90 天）。
+  assets:
+    <<: *logging
+    image: ${ADMIN_IMAGE:-xsite-admin}-assets:${RELEASE_TAG:-local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: assets-uploader
+      args: *build-args
+    restart: 'no'
+    environment:
+      R2_ENDPOINT: ${R2_ENDPOINT:?必须设置 R2_ENDPOINT（https://<账户ID>.r2.cloudflarestorage.com）}
+      R2_BUCKET: ${R2_BUCKET:?必须设置 R2_BUCKET}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:?必须设置 R2_ACCESS_KEY_ID}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:?必须设置 R2_SECRET_ACCESS_KEY}
+      # 对象键前缀，和上面构建参数里的那一段是同一个变量，不会配歪
+      CDN_ASSETS_PREFIX: ${CDN_ASSETS_PREFIX:-admin}
+    networks:
+      - dokploy-network
+
+  # ------------------------------------------------------------------ 页面
+  admin:
+    <<: *logging
+    image: ${ADMIN_IMAGE:-xsite-admin}:${RELEASE_TAG:-local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: serve
+      args: *build-args
+    restart: unless-stopped
+    # 产物没推上 CDN 就先别放流量进来，否则页面会去 CDN 取还不存在的 chunk
+    depends_on:
+      assets:
+        condition: service_completed_successfully
+    # 刻意用 expose 而不是 ports：只对 Traefik 所在的网络开放，不占宿主机端口
+    expose:
+      - '8080'
+    networks:
+      - dokploy-network
+
+    # Traefik 路由。改用 Dokploy Domains 时把这一段删掉，在界面上加 admin.duanju66.cc
+    # （服务选 admin、端口 8080）；/api/admin/* 那条在 service 那份编排里，不受影响。
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      - traefik.http.services.xsite-admin.loadbalancer.server.port=8080
+
+      # 兜底路由（HTTPS）。priority 低于 service 容器上的 /api/admin/ 那条
+      - traefik.http.routers.xsite-admin-web.rule=Host(`${ADMIN_DOMAIN:-admin.duanju66.cc}`)
+      - traefik.http.routers.xsite-admin-web.entrypoints=websecure
+      - traefik.http.routers.xsite-admin-web.tls.certResolver=letsencrypt
+      - traefik.http.routers.xsite-admin-web.service=xsite-admin
+      - traefik.http.routers.xsite-admin-web.priority=10
+
+      # HTTP 入口一律 301 到 HTTPS。
+      # Let's Encrypt 的 HTTP-01 挑战不受影响：Traefik 自己的 ACME 路由优先级更高
+      - traefik.http.routers.xsite-admin-http.rule=Host(`${ADMIN_DOMAIN:-admin.duanju66.cc}`)
+      - traefik.http.routers.xsite-admin-http.entrypoints=web
+      - traefik.http.routers.xsite-admin-http.service=xsite-admin
+      - traefik.http.routers.xsite-admin-http.middlewares=xsite-admin-https
+      - traefik.http.middlewares.xsite-admin-https.redirectscheme.scheme=https
+      - traefik.http.middlewares.xsite-admin-https.redirectscheme.permanent=true
+
+      # 刻意不加 compress 中间件：产物与 index.html 都带 Brotli 11 的预压缩文件，
+      # 由容器里的 brotli_static 直发。再套一层只会换成现压的低档结果
+
+networks:
+  dokploy-network:
+    external: true

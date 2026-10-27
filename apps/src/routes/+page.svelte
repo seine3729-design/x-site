@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import type { HomeBlock } from '#lib/api/types.ts';
+	import AdSlot from '#lib/home/AdSlot.svelte';
 	import BlockRenderer from '#lib/home/BlockRenderer.svelte';
 	import LazyMount from '#lib/home/LazyMount.svelte';
 	import { getI18n } from '#lib/i18n/context.ts';
@@ -39,6 +40,9 @@
 
 <h1 class="sr-only">{page.data.site.name}</h1>
 
+<!-- 首页顶部 / 底部广告位（docs/04 C.5）。home_mid 由后台的「广告位」区块编排，不在这里写死 -->
+<div class="page-x"><AdSlot slot="home_top" class="pt-3" /></div>
+
 {#if data.blocks.length === 0}
 	<div class="page-x">
 		<EmptyState icon="clapperboard" title={i18n.t('home.emptyTitle')} description={i18n.t('home.emptyDesc')}>
@@ -46,7 +50,7 @@
 		</EmptyState>
 	</div>
 {:else}
-	<div class="page-x flex flex-col gap-3 pt-3 md:gap-4 lg:pt-3">
+	<div class="page-x flex flex-col gap-0 pt-0 md:gap-3">
 		{#each data.blocks as raw, index (raw.id)}
 			{@const block = titled(raw)}
 			<div class={deviceClass(block)}>
@@ -64,3 +68,5 @@
 		{/each}
 	</div>
 {/if}
+
+<div class="page-x"><AdSlot slot="home_bottom" class="py-4" /></div>

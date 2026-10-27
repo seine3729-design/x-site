@@ -9,11 +9,13 @@ import (
 
 	"xsite/service/internal/errs"
 	"xsite/service/internal/http/admin"
+	adminanalytics "xsite/service/internal/http/admin/analytics"
 	adminbilling "xsite/service/internal/http/admin/billing"
 	admincommunity "xsite/service/internal/http/admin/community"
 	"xsite/service/internal/http/admin/content"
 	admindomains "xsite/service/internal/http/admin/domains"
 	adminfeedback "xsite/service/internal/http/admin/feedback"
+	adminfinance "xsite/service/internal/http/admin/finance"
 	"xsite/service/internal/http/admin/media"
 	adminops "xsite/service/internal/http/admin/ops"
 	adminplatform "xsite/service/internal/http/admin/platform"
@@ -95,6 +97,10 @@ type Options struct {
 	Domains *admindomains.Handlers
 	// Security 是后台「系统」目录的安全中心接口（A4-4，docs/06 第 39 节，只读），注册在后台会话分组上。
 	Security *adminsecurity.Handlers
+	// Analytics 是后台「数据看板 / 剧集分析」只读接口（S4-3 / A4-1），注册在后台会话分组上。
+	Analytics *adminanalytics.Handlers
+	// Finance 是后台「运营」目录的收入与成本接口（A4-1 / S4-3，docs/06 第 23 节），注册在后台会话分组上。
+	Finance *adminfinance.Handlers
 	// PublicSite 是前台站点编排接口（静态页、首页区块），注册在 /api/v1 分组上。
 	PublicSite *publicsite.Handlers
 	// PublicOps 是前台运营类接口（公告、广告、热搜榜、榜单），注册在 /api/v1 分组上。
@@ -189,6 +195,8 @@ func NewRouter(opt Options) (*gin.Engine, error) {
 	opt.Site.Routes(authed)
 	opt.Domains.Routes(authed)
 	opt.Security.Routes(authed)
+	opt.Analytics.Routes(authed)
+	opt.Finance.Routes(authed)
 
 	// 开放接口（/open-api）：给站外系统直连的接口，不加密、不走后台会话，各自在 handler 内声明鉴权方式。
 	// 其余 /open-api 能力在 S4-6 接入。

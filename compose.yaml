@@ -166,6 +166,10 @@ services:
       # 线路的媒体签名密钥（S1-6e，docs/10 第 8 节）：`引用:密钥`，线路的 sign_key_ref 指向其中一项。
       # 不入库；线上由密钥管理同时下发给 service 与 CDN 边缘，轮换时新增一个引用并行过渡
       LINE_SIGN_KEYS: dev-cdn:${LINE_SIGN_SECRET:?run ./dev.sh up to fill LINE_SIGN_SECRET}
+      # 后台图片优化（docs/03 第 9.6a 节）：Tinify 的 API Key，只在服务端使用、不下发浏览器。
+      # 留空时后台 POST /api/admin/images/optimize 回 503，浏览器退回本地 canvas 压缩（功能降级，不影响启动）
+      IMAGE_TINIFY_API_KEY: ${IMAGE_TINIFY_API_KEY:-}
+      IMAGE_MAX_SIDE: ${IMAGE_MAX_SIDE:-2400}
       # 孤立产物清理（S1-6f，docs/12 第 5 节第 6 条）：本地保留期缩短到 1 小时方便验证
       MEDIA_ORPHAN_RETENTION: ${MEDIA_ORPHAN_RETENTION:-1h}
       MEDIA_CLEANUP_INTERVAL: ${MEDIA_CLEANUP_INTERVAL:-24h}

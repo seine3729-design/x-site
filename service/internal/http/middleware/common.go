@@ -62,12 +62,19 @@ func SecureHeaders(hsts bool) gin.HandlerFunc {
 // 不能把默认 1 MiB 限制放宽到所有 API，也必须在认证前拦住无界上传。
 const adminUploadMaxBytes int64 = 4 << 30
 
+// adminImageOptimizeMaxBytes 是后台图片优化接口接收的原图上限，与 upload.OptimizeMaxBytes 保持一致。
+// 这里不 import 那个包：middleware 是底层包，反向依赖 handler 会形成循环。
+const adminImageOptimizeMaxBytes int64 = 25 << 20
+
 // 长请求的连接读写期限。
 const (
 	// uploadDeadline 覆盖「浏览器把文件传完 + 服务端写入对象存储 + 返回响应」整个过程。
 	uploadDeadline = 2 * time.Hour
 	// streamDeadline 略大于 SSE 自己的单连接存活上限（10 分钟），让服务端主动收尾而不是被超时掐断。
 	streamDeadline = 15 * time.Minute
+	// externalDeadline 给「要等外部服务往返」的后台接口：图片优化要调两次外部 API，
+	// 默认的 30 秒写超时会在响应写出前掐断连接。按它自己的 90 秒调用超时留足余量即可，不必放到小时级。
+	externalDeadline = 3 * time.Minute
 )
 
 // LongRequest 放宽长请求（后台大文件上传、SSE 进度流）的连接读写期限。
@@ -80,6 +87,8 @@ func LongRequest() gin.HandlerFunc {
 		switch {
 		case isAdminUploadContent(c.Request), isAdminUploadComplete(c.Request):
 			extendDeadline(c, uploadDeadline)
+		case isAdminImageOptimize(c.Request):
+			extendDeadline(c, externalDeadline)
 		case isEventStream(c.Request):
 			extendDeadline(c, streamDeadline)
 		}
@@ -108,8 +117,11 @@ func BodyLimit(maxBytes int64) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if c.Request.Body != nil {
 			limit := maxBytes
-			if isAdminUploadContent(c.Request) {
+			switch {
+			case isAdminUploadContent(c.Request):
 				limit = adminUploadMaxBytes
+			case isAdminImageOptimize(c.Request):
+				limit = adminImageOptimizeMaxBytes
 			}
 			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
 		}
@@ -125,4 +137,9 @@ func isAdminUploadContent(r *http.Request) bool {
 // （暂存对象缺失时要从主存储把源视频复制一遍），默认的 30 秒写超时会在响应写出前掐断连接。
 func isAdminUploadComplete(r *http.Request) bool {
 	return r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/admin/uploads/") && strings.HasSuffix(r.URL.Path, "/complete")
+}
+
+// isAdminImageOptimize 识别后台图片优化请求：请求体是没压过的原图，处理要等两次外部服务往返。
+func isAdminImageOptimize(r *http.Request) bool {
+	return r.Method == http.MethodPost && r.URL.Path == "/api/admin/images/optimize"
 }

@@ -67,15 +67,18 @@ type Handlers struct {
 	Limiter    Limiter
 	KeyLimiter Limiter
 	Dev        bool
-	// Identify 解析观看者。S1-10（游客身份）/ S2-1（登录）接入身份中间件前为 nil：观看者一律是游客，
+	// Identify 解析观看者，仅测试注入。生产为 nil：viewer 从 sources 路由上 SetIdentity 解析出的身份取 UserID，
 	// 设备标识取 X-Device-Id（APP 发送；Web 的 BFF 不透传该头，W1-1 接入游客 Cookie 后由身份中间件提供）。
 	Identify func(c *gin.Context) (dom.Viewer, error)
+	// Resolver 校验 Bearer 令牌（identity.Service），挂在 sources 路由的 SetIdentity 上区分注册用户 / 游客 / 未登录。
+	Resolver middleware.AccessResolver
 }
 
 // Routes 注册用户端播放接口到 /api/v1 分组。
 func (h *Handlers) Routes(v1 gin.IRouter) {
 	// 公开接口：游客也能选源（免费分集直接看，其余按试看或返回登录墙 / VIP 墙），观看权限在领域层判定。
-	v1.GET("/episodes/:id/sources", h.Sources)
+	// 挂 SetIdentity 解析身份：注册用户 / 会员据此完整播放，游客 / 未登录 UserID 为 0，按试看或墙处理。
+	v1.GET("/episodes/:id/sources", middleware.SetIdentity(h.Resolver), h.Sources)
 	// 清单与密钥只收加密请求（handler 内检查，不受 API_ENCRYPTION_REQUIRED 影响），授权来自路径或查询串里的播放令牌。
 	v1.GET("/hls/:token/:file", h.Playlist)
 	v1.GET("/hls/key/:episode_id/:key_ver", h.Key)
@@ -186,7 +189,13 @@ func (h *Handlers) viewer(c *gin.Context) (dom.Viewer, error) {
 	if device != "" && !deviceIDRe.MatchString(device) {
 		return dom.Viewer{}, errBadDevice
 	}
-	return dom.Viewer{DeviceID: device}, nil
+	// 身份由 sources 路由上的 SetIdentity 解析：注册用户 UserID>0，游客 / 未登录为 0。
+	// 清单与密钥接口不挂 SetIdentity（观看权限以播放令牌为准），这里取不到身份、UserID 为 0，不影响令牌校验。
+	var userID int64
+	if a, ok := middleware.CurrentAccess(c); ok {
+		userID = a.UserID()
+	}
+	return dom.Viewer{UserID: userID, DeviceID: device}, nil
 }
 
 // limiterSubject 是限流的计数对象：有设备标识时按设备，没有时按 IP（IPv6 按所在 /64，换地址不能绕过）。

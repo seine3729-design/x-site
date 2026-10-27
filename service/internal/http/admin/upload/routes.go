@@ -15,5 +15,9 @@ func (h *Handlers) Routes(authed gin.IRouter) {
 	g.PUT("/:id/content", h.PutContent)
 	g.POST("/:id/complete", h.Complete)
 	g.GET("/:id", h.Get)
+	// 图片辅助接口单独挂在 /images 下：放到 /uploads 里会和 GET /uploads/:id 的参数段撞成路由冲突。
+	// preview 只要已登录的后台会话（理由见 handlers_preview.go）；optimize 按用途要求对应模块的修改权限。
+	authed.GET("/images/preview", h.PreviewImage)
+	authed.POST("/images/optimize", h.OptimizeImage)
 	admin.DeclarePermissions("dramas.edit", "announcements.edit", "ads.edit", "fb_projects.edit", "pages.edit")
 }

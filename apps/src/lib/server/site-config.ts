@@ -11,6 +11,11 @@ export type SiteConfig = {
 	age_gate: { enabled?: boolean; [key: string]: unknown };
 	features: Record<string, boolean>;
 	addresses: Record<string, unknown>;
+	/**
+	 * 图片与视频线路的域名池（契约 0.77.0），来自后台存储线路表。
+	 * 可选是因为旧版本后端与兜底配置里没有这一段，取值一律经 `mergeDomains` 过滤（docs/04 F）。
+	 */
+	media?: { image_bases?: string[]; video_origins?: string[] };
 	menus?: PublicMenu[];
 	footer_pages?: { slug: string; title: string }[];
 	updated_at: string;

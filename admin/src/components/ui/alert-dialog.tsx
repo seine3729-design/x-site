@@ -43,9 +43,14 @@ function AlertDialogOverlay({
 
 function AlertDialogContent({
   className,
+  bodyClassName,
+  children,
   onOpenAutoFocus,
   ...props
-}: React.ComponentProps<typeof AlertDialogPrimitive.Content>) {
+}: React.ComponentProps<typeof AlertDialogPrimitive.Content> & {
+  /** 滚动区（alert-dialog-body）的样式覆盖。 */
+  bodyClassName?: string
+}) {
   const handleOpenAutoFocus = React.useCallback(
     (event: Event) => {
       if (onOpenAutoFocus) {
@@ -69,13 +74,24 @@ function AlertDialogContent({
       <AlertDialogOverlay />
       <AlertDialogPrimitive.Content
         data-slot='alert-dialog-content'
+        // 与 DialogContent 保持一致：外层定位 + 最大高度，内容超出时内部滚动。
         className={cn(
-          'fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-md border bg-background p-6 shadow-lg duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 sm:max-w-lg',
+          'fixed top-[50%] left-[50%] z-50 flex max-h-[calc(100dvh-4rem)] w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] flex-col rounded-md border bg-background shadow-lg duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 sm:max-w-lg',
           className
         )}
         onOpenAutoFocus={handleOpenAutoFocus}
         {...props}
-      />
+      >
+        <div
+          data-slot='alert-dialog-body'
+          className={cn(
+            'grid min-h-0 gap-4 overflow-y-auto overscroll-contain rounded-[inherit] p-6',
+            bodyClassName
+          )}
+        >
+          {children}
+        </div>
+      </AlertDialogPrimitive.Content>
     </AlertDialogPortal>
   )
 }

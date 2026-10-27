@@ -22,15 +22,44 @@ function originsOf(urls: readonly string[]): string[] {
 }
 
 /**
+ * 把静态资源 CDN 前缀转成一条 CSP 来源表达式（前面带一个空格，留空时返回空串）。
+ *
+ * **来源表达式里带路径时，不以 `/` 结尾就是精确匹配那一个路径**（CSP3 §6.6.2.6）。所以
+ * `https://cdn.example.com/apps` 只能匹配 `/apps` 本身，`/apps/_app/immutable/x.js` 会被拦掉 ——
+ * 带路径的前缀必须补上末尾斜杠才是前缀匹配。不带路径（只有域名）时则用裸来源，补斜杠反而多余。
+ */
+function cdnExpression(cdn: string): string {
+	const trimmed = cdn.replace(/\/+$/, '');
+
+	if (!trimmed) {
+		return '';
+	}
+
+	try {
+		const url = new URL(trimmed);
+
+		if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+			return '';
+		}
+
+		return url.pathname === '/' ? ` ${url.origin}` : ` ${url.origin}${url.pathname}/`;
+	} catch {
+		// 填错的地址一律忽略：CSP 里写坏值会让整条策略失效
+		return '';
+	}
+}
+
+/**
  * 文档响应的安全头（docs/10 第 4 节）。
  *
  * connect-src 要包含图片与视频切片的域名池（docs/04 C.8 第 322 行、D 节）：
  * - 封面走 BlobImage 的 fetch + blob:，受 connect-src 约束而不是 img-src，域名不在其中就一张封面都出不来；
  * - 视频切片由 hls.js 用 XHR 从线路 CDN 取（清单与密钥是本站地址，不受影响）。
  *
- * 两个池子都来自部署配置（IMAGE_BASE_URLS、MEDIA_CONNECT_ORIGINS）。后台线路表是运行时数据，
- * 这里列不到的域名在生产会被拦掉；要让它跟着线路表自动变，得把域名池放进 site-config 再按请求生成 CSP。
- * 另外后台可以把封面填成任意完整地址，那类域名同样需要登记。
+ * 两个池子由调用方（hooks.server.ts）按请求传入：主来源是随 /api/v1/site-config 下发的后台线路表
+ * （media.image_bases / media.video_origins，契约 0.77.0），部署配置 IMAGE_BASE_URLS、MEDIA_CONNECT_ORIGINS
+ * 作为补充与后端不可用时的兜底，合并逻辑在 #lib/media/domains.ts。
+ * 仍需手工登记的只有一类：后台把封面 / Logo 填成任意完整地址时，那个域名不在线路表里。
  */
 export function documentSecurityHeaders(
 	isProd: boolean,
@@ -38,8 +67,7 @@ export function documentSecurityHeaders(
 	imageBases: readonly string[] = [],
 	mediaOrigins: readonly string[] = []
 ): Header[] {
-	const origin = cdn.replace(/\/$/, '');
-	const cdnSource = origin ? ` ${origin}` : '';
+	const cdnSource = cdnExpression(cdn);
 	const imageSource = originsOf(imageBases);
 	const imageList = imageSource.length > 0 ? ` ${imageSource.join(' ')}` : '';
 	const mediaSource = originsOf(mediaOrigins).filter((value) => !imageSource.includes(value));

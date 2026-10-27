@@ -45,7 +45,7 @@ apps/src/
 │  ├─ stores/                   # 基于 $state 的全局状态（*.svelte.ts）
 │  └─ http/                     # 浏览器侧 fetch 封装（退避、错误映射）
 ├─ routes/                      # 页面与 BFF
-└─ service-worker/              # PWA
+└─ sw/                          # Service Worker（刻意不叫 service-worker/，见 D 节）
 ```
 
 ### A.3 BFF 约定
@@ -166,6 +166,7 @@ apps/src/
 
 #### 6.1 布局
 - 电脑：播放器 + 控制条（播放/进度/静音/画质/倍速/弹幕/下一集/全屏）+「竖屏看，滚轮换剧」；侧边选集 + 评论。
+- **竖屏视频在电脑端是「高度受限」的**：宽度 = 可用高度 × 比例，所以舞台上下留白压到 1.5rem，侧栏加宽（25 / 30rem）不会把视频挤小。控制条里**收起非必要控件的断点必须按播放器宽度量**（`Player.svelte` 用 `ResizeObserver`，窄于 380px 收起音量条），不能用 `xl:` 这类视口断点——实测视口 1280 时播放框只有 295px，音量条照样显示，整行需要 339px 塞进 263px，时间就被挤到换行。`.ctl` 同理固定 34px，不随视口放大。
 - 手机：沉浸式竖屏，右侧按钮列（赞 / 评论 / 追剧 / 分享 / 选集 / 剧集详情）。
 
 #### 6.2 播放设置面板
@@ -185,6 +186,7 @@ apps/src/
 - 断点续播：显示「上次看到 X」，可从头播；进度每 15 秒及暂停/切集/`visibilitychange` 时上报。
 - 「跳过这一段」（片头/片尾 [推断]）。
 - 自动连播下一集；整部看完倒计时「N 秒后播放《下一部》」。
+- **连播倒计时的起始条件要带分集校验**：换集时 `data` 先变、`player.load()` 要等读完本机续播位置才调用，这段时间 `player.phase` 还停在上一集的 `'ended'`。只判断 `phase === 'ended'` 会让倒计时在新一集上重新冒出来（用户看到「进了下一集提示还在」），到点还会再多跳一集。判断要加 `player.episodeId === episode.id`；另外任何换集（含点「立即播放」）都要先把 `countdown` 收掉。
 - 能不能看：未上架、登录墙、VIP 墙（`NEED_VIP`，非会员看 VIP 集）、试看结束、其他错误五种提示；试看时长由服务端清单控制。VIP 墙展示套餐卡片与「开通会员」，开通后回到原位置继续播放。
 - 播放令牌（签名 URL）过期前 60 秒静默重新取源，不打断播放。
 
@@ -236,7 +238,7 @@ apps/src/
 - 套餐卡片：天卡、周卡、月卡、季卡、年卡（名称、天数、价格、划线价、日均价、角标、推荐），价格按所选渠道显示人民币或 USDT，`Intl.NumberFormat` 按当前语言格式化。
 - 渠道选择：只显示 `/api/v1/vip/plans` 返回的、对当前客户端与地区可用的渠道（支付宝 / 微信支付 / USDT）。
 - 优惠券：自动选可用券中优惠最大的一张，可更换或不用；另有入口「用金币兑换」跳到金币商城的会员商品。
-- 下单：`POST /api/v1/pay/orders`（商品类型 `vip_plan`），订单状态 `GET /api/v1/pay/orders/:order_no`。当前 development 提供仅用于验收的模拟订单与完成路径；production 在真实渠道适配完成前不创建订单。
+- 下单：`POST /api/v1/pay/orders`（商品类型 `vip_plan`），订单状态 `GET /api/v1/pay/orders/:order_no`。当前 development 提供仅用于验收的模拟订单与完成路径；前台只将以单个 `/` 开头、且不含 `//` 或反斜杠的 `next` 保存为 `return_path`，模拟完成后提供回到该站内路径的操作。production 在真实渠道适配完成前不创建订单。
 - 支付：
   - 支付宝：跳转电脑网站或手机网站支付页，返回后进入「支付确认中」。
   - 微信：电脑端弹出二维码（Native）；手机外部浏览器跳 H5 支付；微信内置浏览器走 JSAPI。
@@ -307,6 +309,12 @@ apps/src/
 ### C.4 评论
 - 排序最新/最热，标题「评论（N）」；空态「来抢沙发」。
 - 发表（表情来自 `/api/v1/emojis`）、回复、点赞、删除本人；举报原因 7 类；待审「审核中」；手机沉浸式下评论以抽屉打开，抽屉内容懒加载。
+- 位置：电脑端侧栏下半块在「选集 / 评论（N）」之间切换（侧栏已占满视口高度，两块并排会把选集挤得没法用）；手机端入口在右侧按钮列。
+- 版式（参考主流短视频评论区）：头像在左，昵称小号灰字在上、正文在下，时间与「回复 / 删除 / 举报」在正文下一行，点赞爱心单独在右侧一列（图标 + 计数竖排，触摸区 44px）；回复默认折起，显示「展开 N 条回复」；回复不单独插入输入框，而是把底部输入框的提示换成「回复 某人」，列表不会因此跳动。
+- 手机抽屉：`#lib/ui/Sheet.svelte`（分享面板共用），`fill` 时固定高度 76dvh，从底部滑上来、顶部抓手可下拉关闭、列表自己滚动（`overscroll-behavior: contain`）、输入框贴底并避开安全区。**高度必须写死**：内容是异步来的，内容驱动高度会让抽屉顶边一跳一跳。抓手是纯指针增强，不可聚焦、对读屏隐藏（键盘与读屏走关闭按钮与 Esc）——给它 `tabindex` 会让 `showModal()` 把焦点落在上面，全局 `:focus-visible` 的描边会铺成两条横线。
+- 刷剧页 `/shua` 的评论入口在右侧按钮列（「赞」之后），抽屉按**当前在播的那一集**取评论；手机端另有顶部返回条（有来路退回去，直接进来的回首页）。
+- **游标坑**：列表接口的 `next_cursor` 没有 `omitempty`，**没有下一页时下发的是空字符串**而不是缺省。判断「还有下一页」一律用真假值（`#lib/comment/thread.ts` 的 `nextCursor`），写成 `!== undefined` 会让无限滚动把空游标当成还有下一页，而拼地址时空游标又被丢掉，于是反复重新请求第一页——实测短评论列表 4 秒内发了 59 次请求、评论区 DOM 变动 237 次，表现为「加载时一直抖」。同理，「结果为空就重试」不能作为取表情的条件（后台没配表情或命中 304 时结果恒为空，写回状态又把 effect 自己触发一遍）。
+- 实现偏差（W2-3）：列表接口是游标分页、没有总数，所以还有下一页时标题显示「评论（N+）」；后端没有取消点赞接口，点过即定住；列表接口不含待审内容，自己刚发的待审评论只在本次会话里回显；删除走 5 秒撤销提示而不是二次确认弹窗（与「清空历史」一致，接口没有还原）。
 - 评论晒图（V1 及以上）：最多 3 张，选图后在浏览器压缩（长边 1600 px）、直传对象存储并显示进度，提交后整条「审核中」；图片用 `BlobImage` 显示缩略图，点开大图可键盘左右切换、Esc 关闭（`13` 第 3.8 节）。
 - 所有用户内容按纯文本渲染（不使用 `{@html}`）。
 
@@ -314,6 +322,10 @@ apps/src/
 - 12 个位置；角标「广告/推广」、「了解详情」、「N 秒后可跳过/跳过」、「关闭广告」。
 - 曝光用 `IntersectionObserver`（≥ 50% 可见且 ≥ 1 秒）判定，批量随埋点上报。
 - 广告素材固定宽高占位，避免布局偏移（CLS）。
+- **取数期间不画骨架屏**：大多数广告位平时是空的，先摆骨架再撤掉会闪一下（用户反馈）。`AdSlot` 只在素材到位后才渲染，没有素材时整块不存在、不占位；代价是有广告时会有一次布局位移，发生在挂载后很早。
+- 已接入的位置与落点（`#lib/home/AdSlot.svelte` 为公共组件）：`home_top` / `home_bottom` 首页区块上下、`home_mid` 由后台「广告位」区块编排、`footer_banner` 与 `text_link` 页脚、`detail_banner` 详情页剧集区块之前、`pause` 播放器暂停贴片（第一次暂停才挂载，之后用 `hidden` 收起——`display:none` 时 `IntersectionObserver` 不会误报曝光）、`global_popup` 全站弹窗（`#lib/shell/AdPopup.svelte`，电脑居中 / 手机底部抽屉，**取到素材才弹**，关掉后当天不再弹）、`app_download` 右下角浮窗（`#lib/shell/AdFloat.svelte`，同样取到素材才出现、可关闭）。「今天不再显示」记在本机（`#lib/shell/ad-dismiss.ts`），不含身份信息。
+- 非横幅位要传 `aspect`（弹窗 3:4、浮窗 16:9），否则素材按横幅的 3:1 / 6:1 被压扁。
+- **仍未接入**：`preroll`（贴片要接播放门控与「N 秒后可跳过」）、`immersive_feed`（插进刷剧流会改动条目索引）、`list_feed`（要插到列表网格内部）。后台能配、接口能返回，但前台没有落点。
 
 ### C.6 账号/游客/注册墙
 - 登录弹窗/注册墙三好处：进度跨设备同步、追更提醒、游客记录自动并入。
@@ -322,6 +334,11 @@ apps/src/
 ### C.7 分享与海报
 - 分享面板：复制链接、系统分享（`navigator.share`）、生成海报。
 - 海报：Canvas 画「剧名 第N集」+ 二维码，可下载；二维码库按需加载。
+- 实现（W3-3 的分享部分）：`#lib/share/SharePanel.svelte` 由 `#lib/drama/DramaActions.svelte` 的分享按钮打开，**电脑是居中弹窗、手机是从底部滑上来的抽屉**（同一个 `#lib/ui/Sheet.svelte`，`center` 控制电脑端形态）。面板内容：海报预览（9:16 固定占位，画好再淡入）、下载海报、复制链接、更多分享。海报在面板打开后才画，二维码模块与 Canvas 都不进首屏。
+- **二维码不引三方库**：`#lib/share/qr.ts` 是仓库内的最小编码器（Model 2、字节模式、等级 M、版本 1–10，上限 213 字节），照 `#lib/ui/icons.ts` 的做法把需要的表放进仓库，`apps` 保持零运行时依赖。正确性由 `qr.test.ts` 与「用 Chrome 的 `BarcodeDetector` 回读原文」的浏览器实测保证。
+- 版面坐标写死在 `#lib/share/poster.ts` 顶部（720×1280）：封面卡片 2:3、剧名在二维码上方用整幅宽、扫码提示与地址排在二维码左侧。**改任何一块都要重算后面的块**——封面原先按整幅宽算高（912px），下方只剩 236px，扫码提示直接压在剧名上。
+- 海报底色取当前主题的 `--brand` / `--canvas` / `--fg`，后台换配色海报跟着变；封面取不到时按剧名画稳定渐变 + 首字（与列表占位一致）。
+- 「生成海报」受 `features.share_poster` 控制，关掉时面板只剩复制链接与系统分享。
 - 社交卡片图来自 `/api/v1/og/drama/:id`、`/api/v1/og/brand-logo`。
 
 ### C.8 通知 / 主题 / 公告 / 卡片
@@ -354,8 +371,16 @@ apps/src/
 
 - **刻意不提供 web app manifest**：浏览器判定「可安装」的前提之一就是 manifest，没有它地址栏不会出现安装图标、也不会弹安装横幅。`register-service-worker.svelte` 另外监听 `beforeinstallprompt` 并 `preventDefault()`，万一某个浏览器仍然触发也不弹。原 `/manifest.webmanifest` 路由与 `<link rel="manifest">` 已删除。
 - 生产构建才注册（`dev` 时直接跳过），缓存名带构建版本：新版激活时删旧缓存并通知页面。
-- 缓存策略（`src/service-worker/index.ts`）：
-  - `/_app/immutable/` 缓存优先（内容哈希命名，可永久缓存）；
+- **源码在 `src/sw/index.ts`，不由 SvelteKit 构建**，而是 `scripts/build-sw.ts` 用 Bun 编译到
+  `static/service-worker.js`（构建版本与产物前缀以 `__SW_VERSION__` / `__SW_ASSET_BASE__` 注入）。
+  原因：SvelteKit 只要扫到自己管的 SW 入口文件、而 `paths.assets` 又非空，就直接以
+  `service_worker_assets` 退出，而带内容哈希的产物要走 CDN 绝对地址（A.5、`14` 第 0 节）。
+  **必须在 `vite build` 之前编译并输出到 `static/`**：adapter-bun 的静态路由表是在 `vite build` 时定下的，
+  构建之后再往 `build/client/` 里塞文件，文件在磁盘上但 `/service-worker.js` 一律 404。
+- 缓存策略（`src/sw/index.ts`）：
+  - 产物缓存优先（内容哈希命名，可永久缓存）。产物地址可能是 CDN 绝对地址，所以收录条件是
+    `response.type` 为 `basic` 或 `cors`，仍然挡 `opaque`（CDN 的 CORS 没配好时就会退化成它：
+    status 恒 0、存了读不出来还占配额）；
   - 导航请求：缓存里的副本不到 10 分钟就直接用，否则先走网络（2.5 秒超时）→ 缓存副本 → `/offline`；
   - 响应头带 `no-store` 或 `private` 的一律不缓存；缓存键是完整地址（含查询串），最多留 40 个页面；
   - `/api/*` 一律走网络：加密响应每次密钥都不同，也含个人数据。
@@ -379,9 +404,10 @@ apps/src/
 
 - CSP 哈希模式（W0-4）落地时注意：主题令牌写在 `<html>` 的 `style` **属性**上（C.8），哈希管不到行内样式属性，`style-src-attr` 要保留 `'unsafe-inline'`（或改成给 `<style>` 块算哈希，代价是多一段内联样式）。
 - CSP 哈希模式 + `frame-ancestors 'none'` + `object-src 'none'`；`connect-src` 仅本站、图片与视频切片域名池；`media-src`、`img-src` 为 `'self' blob:`，`worker-src 'self' blob:`（hls.js 转封装 Worker）。
-- `connect-src` 的两个域名池来自部署配置（`config/security-headers.ts` 读 `IMAGE_BASE_URLS`、`MEDIA_CONNECT_ORIGINS`，只取 scheme://host:port，填错的地址忽略——CSP 里写坏值会让整条策略失效）。**封面受 connect-src 约束而不是 img-src**：`BlobImage` 是 `fetch` 取图再转 `blob:`，域名不在池里生产环境一张封面都出不来；视频切片同理（清单与密钥是本站地址，不受影响）。
-  - 已知局限：后台线路表与「封面填完整地址」都是运行时数据，静态 CSP 列不全，新增域名要同步部署配置。要让它自动跟随，得把域名池放进 `site-config` 再按请求生成 CSP。
-  - 图片 / 视频线路必须对站点域名返回 CORS 头，否则即使 CSP 放行也会被浏览器拦（本地实测过：后台把 Logo 填成不带 CORS 头的第三方地址时，Logo 回退到内置标识）。
+- `connect-src` 的两个域名池**随 `site-config` 下发、CSP 按请求生成**（契约 0.77.0）。`hooks.server.ts` 每次文档请求取一次站点配置（进程内缓存 30 秒），把 `media.image_bases` / `media.video_origins` 交给 `config/security-headers.ts` 生成 CSP；部署配置 `IMAGE_BASE_URLS`、`MEDIA_CONNECT_ORIGINS` 退为**补充**，与下发的池子合并去重（后台池优先），用于登记「后台把封面 / Logo 填成完整地址」那类不在线路表里的域名，以及后端不可用时兜底。只取 scheme://host:port，填错的地址忽略——CSP 里写坏值会让整条策略失效。**封面受 connect-src 约束而不是 img-src**：`BlobImage` 是 `fetch` 取图再转 `blob:`，域名不在池里生产环境一张封面都出不来；视频切片同理（清单与密钥是本站地址，不受影响）。
+  - 同一个池子还用来拼**图片的相对 key**（`#lib/media/image.ts` 的 `imageSources`，`docs/12` 第 6 节）：后台上传的封面在库里是 `img/drama_cover/xxx.webp` 这种相对 key，池子为空时拼不出地址，前台直接退到渐变占位图——**不发请求、没有 404、也没有 CSP 违规**，从前端完全查不出来。这是把域名池从部署期变量改成随配置下发的直接原因（本地实测过：`apps/.env.development` 从来没配 `IMAGE_BASE_URLS`，后台上传的封面一张都显示不出来）。
+  - 仍存在的局限：后台可以把封面 / Logo 填成任意完整地址，那类域名不在线路表里，只能继续在部署配置里登记。
+  - 图片 / 视频线路必须对站点域名返回 CORS 头，否则即使 CSP 放行也会被浏览器拦（本地实测过：后台把 Logo 填成不带 CORS 头的第三方地址时，Logo 回退到内置标识；同一个域名下也可能是 CDN 边缘缓存里存了一份没有 CORS 头的副本，purge 即可，不必动桶的 CORS 规则）。
 - favicon 等 `<link rel="icon">` 必须是普通文件地址：内联成 `data:` 会被 `img-src 'self' blob:` 拦掉（构建时用 Vite 的 `?no-inline` 强制输出文件）。
 - 浏览器 `/api/v1/*` 请求报文加密（A.5），BFF 不接触明文；加密只提高抓包和批量抓取的成本，鉴权仍由会话与限流保证。
 - 富文本（静态页）由后端清洗后输出；前端**不用 `{@html}` + DOMPurify，改为与自定义 HTML 区块同一套沙箱 iframe**（`#lib/home/SandboxHtml.svelte`，`sandbox="allow-scripts"`、不加 `allow-same-origin`，高度由 iframe 内 `postMessage` 回传，配色读外层 CSS 变量）。好处是不引入新依赖、SSR 不需要 jsdom，隔离强度也比在主文档里清洗更高。唯一仍用 `{@html}` 的地方是 JSON-LD（内容是转义后的 JSON，带 eslint 豁免说明）。

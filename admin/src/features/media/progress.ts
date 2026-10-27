@@ -74,13 +74,23 @@ export function transcodeProgressText(status: TranscodeJobStatus, progress: numb
 }
 
 /**
- * 图片压缩前后的对比文案。运营要能判断「压得狠不狠」：封面压过头会在渐变和文字边缘出噪点，
- * 看到省了多少才好决定要不要换一张图。reused 表示原图更优、直接上传了原文件（没有重新编码）。
+ * 图片压缩的来源。
+ * - `server`：服务端的图片优化服务（按内容选量化参数，压缩比与画质都更稳）
+ * - `local`：浏览器 canvas 兜底（优化服务没配置或额度用尽时）
+ * - `reused`：原图本身已是更优的 WebP，直接上传原文件、没有重新编码
  */
-export function compressionSummary(originalBytes: number, finalBytes: number, reused: boolean): string {
+export type CompressionMode = 'server' | 'local' | 'reused'
+
+/**
+ * 图片压缩前后的对比文案。运营要能判断「压得狠不狠」：封面压过头会在渐变和文字边缘出噪点，
+ * 看到省了多少才好决定要不要换一张图。顺带标出是服务端压的还是浏览器兜底压的 ——
+ * 浏览器兜底的画质明显更差，运营看到这行就知道该去检查优化服务的配置或额度。
+ */
+export function compressionSummary(originalBytes: number, finalBytes: number, mode: CompressionMode): string {
   if (!Number.isFinite(originalBytes) || originalBytes <= 0 || !Number.isFinite(finalBytes) || finalBytes <= 0) return ''
-  if (reused) return `原图 ${formatBytes(originalBytes)}，已是更优的 WebP，按原文件上传（无损）`
+  if (mode === 'reused') return `原图 ${formatBytes(originalBytes)}，已是更优的 WebP，按原文件上传（无损）`
   const saved = Math.round((1 - finalBytes / originalBytes) * 100)
   const change = saved > 0 ? `省 ${saved}%` : saved === 0 ? '体积不变' : `大 ${-saved}%`
-  return `原图 ${formatBytes(originalBytes)} → WebP ${formatBytes(finalBytes)}（${change}）`
+  const by = mode === 'server' ? '服务端压缩' : '浏览器兜底压缩'
+  return `原图 ${formatBytes(originalBytes)} → WebP ${formatBytes(finalBytes)}（${change}，${by}）`
 }

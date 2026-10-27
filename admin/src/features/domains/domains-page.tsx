@@ -5,6 +5,7 @@ import { toast } from 'sonner'
 import { errorMessage } from '@/lib/http'
 import { useCan } from '@/stores/auth-store'
 import { ConfirmDialog } from '@/components/confirm-dialog'
+import { DatePicker } from '@/components/date-picker'
 import { NoPermission } from '@/components/module-placeholder'
 import {
   Badge,
@@ -413,7 +414,7 @@ function DomainFormDialog({ entry, onDone, onClose }: { entry: DomainEntry | nul
             <Input placeholder='可留空' value={dns} onChange={(e) => setDns(e.target.value)} />
           </Field>
           <Field label='证书到期日'>
-            <Input type='date' value={certDate} onChange={(e) => setCertDate(e.target.value)} />
+            <DatePicker value={certDate} onChange={setCertDate} placeholder='可留空，请选择到期日' />
           </Field>
           <Field className='col-span-2' label='备注'>
             <Textarea rows={2} placeholder='可留空，≤200 字' value={note} onChange={(e) => setNote(e.target.value)} />

@@ -6,6 +6,8 @@
 package sqlcgen
 
 import (
+	"context"
+
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -20,4 +22,65 @@ type InsertEventsParams struct {
 	Region     string
 	Isp        string
 	Props      []byte
+}
+
+const listMetricDaily = `-- name: ListMetricDaily :many
+
+SELECT day, uv, play_attempts, play_starts, play_errors, watch_seconds,
+       registrations, reg_wall_views, ad_impressions, ad_clicks
+FROM metric_daily
+WHERE day >= $1::date AND day <= $2::date
+ORDER BY day
+`
+
+type ListMetricDailyParams struct {
+	FromDay pgtype.Date
+	ToDay   pgtype.Date
+}
+
+type ListMetricDailyRow struct {
+	Day           pgtype.Date
+	Uv            int64
+	PlayAttempts  int64
+	PlayStarts    int64
+	PlayErrors    int64
+	WatchSeconds  int64
+	Registrations int64
+	RegWallViews  int64
+	AdImpressions int64
+	AdClicks      int64
+}
+
+// 看板读查询（S4-3）：只读预聚合表，纯 SELECT，sqlc 支持。
+// 剧集分析列表要「按不同指标排序 + 分页」，ORDER BY 列无法参数化，手写在 store/pg/analytics.go。
+// 某日期区间（北京时间日）的全站日汇总，升序。供看板窗口汇总、环比与每日序列。
+func (q *Queries) ListMetricDaily(ctx context.Context, arg ListMetricDailyParams) ([]ListMetricDailyRow, error) {
+	rows, err := q.db.Query(ctx, listMetricDaily, arg.FromDay, arg.ToDay)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListMetricDailyRow{}
+	for rows.Next() {
+		var i ListMetricDailyRow
+		if err := rows.Scan(
+			&i.Day,
+			&i.Uv,
+			&i.PlayAttempts,
+			&i.PlayStarts,
+			&i.PlayErrors,
+			&i.WatchSeconds,
+			&i.Registrations,
+			&i.RegWallViews,
+			&i.AdImpressions,
+			&i.AdClicks,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

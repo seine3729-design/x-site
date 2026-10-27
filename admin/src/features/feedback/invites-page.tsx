@@ -6,6 +6,7 @@ import { toast } from 'sonner'
 import { formatDateTime } from '@/lib/format'
 import { useCan } from '@/stores/auth-store'
 import { ConfirmDialog } from '@/components/confirm-dialog'
+import { DatePicker } from '@/components/date-picker'
 import { NoPermission } from '@/components/module-placeholder'
 import {
   Button,
@@ -309,13 +310,13 @@ function CreateInviteDialog({
           </div>
           <div className='flex flex-col gap-2'>
             <Label htmlFor='inv-expires'>过期时间</Label>
-            <Input
+            <DatePicker
               id='inv-expires'
+              mode='datetime'
               className='h-9'
-              type='datetime-local'
               placeholder='留空表示不过期'
               value={expiresAt}
-              onChange={(e) => setExpiresAt(e.target.value)}
+              onChange={setExpiresAt}
             />
           </div>
           <div className='flex flex-col gap-2'>

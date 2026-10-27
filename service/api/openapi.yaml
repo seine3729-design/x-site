@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: x-site API
-  version: 0.73.0
+  version: 0.82.0
   description: |
     三端共用的接口契约（docs/07）。改接口必须先改本文件。
     路径前缀（docs/07 第 0.5 节）：前台（Web、APP）接口一律 /api/v1/*，运营后台接口一律 /api/admin/*，
@@ -424,6 +424,70 @@ info:
     Web 用 sendBeacon、APP 用本地队列）。服务端打 occurred_at 时间戳后 COPY 进 event_raw（按天 RANGE 分区）；
     未知事件类型与序列化后 > 4KB 的 props 单条静默丢弃，超过每设备每分钟配额整体静默丢弃，始终返回 204、不回传数据。
     走 /api/v1 报文加密（dev 可明文）。汇总（metric_*）、看板与剧集分析接口随 S4-2 / S4-3。
+
+    0.74.0（变更，后台视频上传的转码暂存时机，docs/03 第 9.6a 节与 adr/0008，无迁移）：请求与响应结构不变。
+    `PUT /api/admin/uploads/{id}/content` 在接收请求体时就并行把视频写入私有 ingest/ 暂存桶；
+    `POST /api/admin/uploads/{id}/complete` 因此只核对暂存对象的元数据，不再把整个源文件下载回来重新上传。
+    历史会话的暂存缺失时仍退回复制一次，这条路径的耗时与文件大小成正比，调用方必须显式放宽超时（后台用 5 分钟）。
+
+    0.75.0（新增，S4-3 看板与剧集分析读接口，docs/03 第 8 节，无迁移）：GET /api/admin/analytics/overview
+    （数据看板概览，权限点 dashboard.view）与 GET /api/admin/analytics/dramas（剧集分析列表，analytics_dramas.view）。
+    只读 S4-2 的 metric_* 预聚合表、不扫 event_raw。窗口按北京时间日、一律「到昨天」为止（今天是 partial，计入会让环比失真）。
+    overview 返回 totals（窗口汇总）、prev（上一等长窗口，供前端自行算环比）与 daily（每日序列，缺日零填充）；
+    dramas 按窗口聚合、标 is_new（创建于窗口内），可按 viewers / play_starts / watch_seconds 降序，页码分页。
+    days 默认 7、上限 90。数据看板与剧集分析页面（A4-1）随后接入。
+
+    0.76.0（新增，S4-3 单剧分析接口，docs/06 第 3 节，无迁移）：GET /api/admin/analytics/dramas/{id}
+    （单剧分析，权限点 analytics_dramas.view）。窗口口径同列表（北京日、到昨天，days 默认 7、上限 90）。
+    返回剧基本信息 + online_days（创建至今天数）+ totals / prev（环比）+ daily（每日序列，缺日零填充）+
+    episodes（集间留存曲线：按集号升序，retention_pct 相对第 1 集 viewers，窗口内无数据的集补 0）。剧不存在 404。
+    口径：留存基于 metric_episode_daily 的按天去重 viewers 跨天累加，为规模近似、非严格去重留存；
+    追剧 / 评论 / 举报数、来源、端占比、QoS、与全站均值对比、流失拐点待埋点 SDK 或跨域表接入（W4-1）。
+
+    0.77.0（新增，W0-4 / S1-6b 线路域名池随站点配置下发，docs/04 F、docs/12 第 6 节，无迁移）：
+    GET /api/v1/site-config 新增 media 段（SiteMediaDomains：image_bases、video_origins），
+    来自后台存储线路表里 status != disabled 且有 base_url 的线路，图片按优先级倒序给完整访问前缀、视频只给域名。
+    在此之前客户端只能从部署期环境变量（apps 的 IMAGE_BASE_URLS / MEDIA_CONNECT_ORIGINS）拿这些域名，
+    必须人工与后台线路表对齐；漏同步的表现是**封面一张都不显示且控制台没有任何报错**（相对 key 拼不出地址，
+    前台直接退到占位图），生产上还会被 CSP 的 connect-src 拦掉。改为随配置下发后跟着线路表自动变。
+
+    0.78.0（新增 + 变更，后台图片压缩与预览、视频源文件落点，docs/03 第 9.6a 节与 adr/0008，无迁移）：
+    新增 POST /api/admin/images/optimize（原图进、WebP 出，服务端调 Tinify 压缩，按 purpose 要求 *.edit 权限）
+    与 GET /api/admin/images/preview（把 img/ 下的对象 key 同源代理成图片，只要已登录后台会话）。
+    两条都不是统一响应包，成功时直接回图片字节。
+    变更：**视频源文件只写私有 MEDIA_SOURCE_BUCKET 的 ingest/，不再写主存储**（请求与响应结构不变，
+    AdminMediaUpload.source_key 对视频的含义随之变为暂存 key）。主存储里那一份没有任何读者，
+    为它多付一次完整上行会把跨公网的上传拖垮：实测 30 MB 切 4 片并发传 R2 时单个 UploadPart
+    在途超过两分钟被对端断连、重试用尽后整个请求 500，改为只写入库桶后同样的 30 MB 用 0.2 秒。
+    图片压缩从浏览器 canvas 挪到服务端：固定 0.92 质量重编码对已优化的 JPEG 会「掉画质还涨体积」
+    （运营报的「压缩后比原图还大」）；没配 Key / 额度用尽时浏览器按质量阶梯兜底，不阻塞上传。
+    线路与地区规则的增删改现在会令 site_config.version +1 并广播失效，所以条件请求仍然准确。
+    存储源与存储设置的变更暂未接版本 +1（它们不改域名池，靠配置缓存的 TTL 兜底）。
+
+    0.79.0（新增，A4-1 / S4-3 收入与成本，docs/06 第 23 节，迁移 00053）：GET/PUT /api/admin/finance?month=
+    （finance.view / finance.edit）。运营按月手填 5 项收支（广告收入、导流 / 互推收入、流量费、服务器费、支付手续费，
+    人民币分、各带备注）；会员收入不手填，由后台从 pay_order 已支付 vip_plan 订单按 paid_at 北京月自动汇总，
+    分币种（CNY 分 / USDT micro）、按渠道、按套餐（JOIN vip_plan 取 code），退款按原支付月计入、未支付排除。
+    返回手填项 + membership 汇总 + gross_profit_fen 人民币口径毛利（广告 + 导流 + 会员 CNY 净收入 − 流量 − 服务器 − 支付手续费；
+    外币不并入）。month 省略取当前北京月。记审计 finance.save。
+
+    0.80.0（新增，A4-1 / S4-3 导出给 Agent 的数据包，docs/06 第 1 节，无迁移）：GET /api/admin/analytics/export?days=
+    （dashboard.view）。把看板概览（本期 vs 上一等长窗口的 UV / 播放 / 注册 / 广告 / 有效观看与派生率）与热门剧 Top 10
+    打包成一段中文 Markdown 简报（内含给 AI 的提示词、数据表与口径说明），运营在看板点「复制数据给 Agent」一键复制、
+    粘贴给大模型生成给管理层的摘要。窗口口径同看板（北京日、到昨天），复用概览与剧集 Top N，无新增存储。
+
+    0.81.0（修复，选源身份未接入导致登录 / 会员墙形同虚设，S1-7 / S2-1 / S3-10，无迁移）：
+    GET /api/v1/episodes/{id}/sources 之前从未解析观看者身份——PublicPlay 没接身份中间件（S2-1 时留的
+    「PublicPlay.Identify 待后续」尾巴一直没补），注册用户 / 会员也被当游客，login/vip 分集对所有人只按游客处理
+    （有 trial_sec 放试看、否则墙）：未登录能试看本应登录 / 会员的分集，而真正的登录用户 / 会员反而拿不到完整清单。
+    现在 sources 路由挂 SetIdentity 解析 Bearer（注册用户 UserID 透传、会员按 user_vip.expire_at 实时判定），
+    清单 / 密钥仍以播放令牌为准、不挂身份中间件（避免 Bearer 过期中断播放）。接口形状不变，仅鉴权行为修正。
+
+    0.82.0（新增，选源返回整集时长用于进度条，S1-7，无迁移）：
+    PlaybackSources 新增 duration_sec（整集时长秒，取自 episode.duration_sec，0 表示老产物未回填）。
+    试看时清单只含前 trial_sec 秒，播放器 video.duration 只有试看长度，进度条会误显示成试看秒数；
+    前台据此把进度条总长显示为整集时长，可播区间只到 trial_sec、其余画成锁定段，拖动不越过可播边界。
+    duration_sec 为 0 时前台回退到 video.duration（与改动前一致）。接口其余形状不变。
 servers:
   - url: http://localhost:8080
     description: 本地开发（./dev.sh up）
@@ -807,7 +871,7 @@ paths:
         1. 分集可播放：剧前台可见（不在回收站、已上架、定时已到点）且分集已转封装，否则 404 NOT_FOUND。
         2. 观看权限：free 完整播放；login 已登录完整播放，游客有 trial_sec 时试看、否则 401 NEED_LOGIN；
            vip 会员完整播放，非会员（游客一律视为非会员）有 trial_sec 时试看、否则 402 NEED_VIP。
-           S1-10 / S2-1 / S3-10 接入登录与会员前，所有观看者都是游客。
+           身份由 Authorization: Bearer 的 Access Token 解析（注册用户 role=user，游客 role=guest，无令牌为未登录、按游客处理），会员按 user_vip.expire_at 实时判定。
         3. 候选线路：该集产物有就绪副本的存储源上的视频线路（S1-6f；还没有就绪副本的老产物不按副本过滤），
            与 GET /api/v1/lines（kind=video）同一套打分与加权随机，取前 N 条（存储设置的候选数量）。
            line_id 为手选线路：在候选中（含超出 N 条的）且健康分 ≥ 30 时放到第一位并标 manual，否则忽略。
@@ -3435,7 +3499,7 @@ paths:
         按 purpose 动态要求 dramas.edit、announcements.edit、ads.edit、fb_projects.edit 或 pages.edit。
         服务端按媒体类型选择后台「存储设置」中的图片或视频主存储，固定 provider_id 及 endpoint、region、bucket、path style、path_prefix 快照；同一 provider 后续配置变更只影响新会话，CDN/线路只用于后续读取分发。
         图片只能申请 WebP / AVIF，浏览器先压缩编码再上传；视频只支持 MP4、MOV、WebM、MKV，最大 4 GiB。
-        会话绑定当前管理员、服务端生成对象 key、15 分钟有效；图片目标为 img/<purpose>/，视频源目标为视频主存储的 video/source/，完成时服务端复制到私有 ingest/ 暂存桶转码。
+        会话绑定当前管理员、服务端生成对象 key、15 分钟有效；图片目标为 img/<purpose>/，视频源目标为视频主存储的 video/source/，并在接收请求体时并行写入私有 ingest/ 暂存桶供转码读取。
         记审计 media_upload.create。
       tags: [admin-content]
       security: [{ AdminSession: [] }]
@@ -3507,6 +3571,8 @@ paths:
       summary: 完成后台媒体上传
       description: |
         再次检查对象大小、Content-Type；图片额外检查 WebP / AVIF 文件头后直接 ready。
+        视频只核对上传阶段已写入 ingest/ 暂存桶的对象元数据，不再搬运文件；更早版本留下的会话（源文件写在主存储）
+        才退回复制一次，那种情况下的处理时间与文件大小成正比，调用方必须显式放宽超时（后台用 5 分钟），不能用默认的 15 秒。
         分集视频提交既有受保护 HLS 转封装任务；广告视频进入 media 队列，完成后 output_key 为 video/assets/<upload_id>/master.m3u8。
         记审计 media_upload.complete。
       tags: [admin-content]
@@ -3522,6 +3588,83 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+
+  /api/admin/images/optimize:
+    post:
+      summary: 压缩后台图片并转为 WebP
+      description: |
+        请求体是原图二进制（Content-Type 为原图的 MIME，最大 25 MiB），响应体是压缩后的 WebP 二进制 —— 不是统一响应包。
+        服务端调外部图片优化服务（Tinify）压缩、按需转 WebP 并把最长边限制到 IMAGE_MAX_SIDE（默认 2400），
+        调用方拿到结果后仍走 POST /api/admin/uploads 的三步上传。
+        压缩必须在服务端做：优化服务的 API Key 不下发浏览器；浏览器 canvas 重编码对已优化的 JPEG 会「掉画质还涨体积」。
+        按 purpose 要求对应模块的 *.edit 权限（这个接口消耗外部服务的付费额度）。不记审计（不改变任何业务数据）。
+        响应头 X-Image-Input-Bytes / X-Image-Output-Bytes 给出前后字节数，X-Image-Quota-Used 是外部服务回报的本月已用次数。
+        未配置 Key 或本月额度用尽返回 503、图片无法识别返回 400；两种情况下调用方都应退回浏览器本地压缩，不要阻塞上传。
+        处理要等两次外部往返，调用方超时不能用默认的 15 秒（后台用 120 秒）。
+      tags: [admin-content]
+      security: [{ AdminSession: [] }]
+      parameters:
+        - name: purpose
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [drama_cover, episode_cover, announcement_image, ad_image, ad_poster, feedback_project_cover, static_page_image]
+          description: 决定所需的后台修改权限；只接受图片用途
+        - $ref: "#/components/parameters/AdminOrigin"
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content:
+          image/jpeg: { schema: { type: string, format: binary } }
+          image/png: { schema: { type: string, format: binary } }
+          image/webp: { schema: { type: string, format: binary } }
+          image/avif: { schema: { type: string, format: binary } }
+      responses:
+        "200":
+          description: 压缩后的 WebP 图片
+          headers:
+            X-Image-Input-Bytes: { schema: { type: integer }, description: 原图字节数 }
+            X-Image-Output-Bytes: { schema: { type: integer }, description: 压缩结果字节数 }
+            X-Image-Quota-Used: { schema: { type: integer }, description: 外部服务回报的本月已用次数 }
+          content:
+            image/webp: { schema: { type: string, format: binary } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+
+  /api/admin/images/preview:
+    get:
+      summary: 预览后台图片对象
+      description: |
+        把 img/ 下的对象 key 同源代理成图片字节，供后台直接用在 <img src>：媒体字段存的是对象 key，
+        既不是网址也不带存储源信息，后台此前只能显示一行路径文本。从当前图片主存储读取，带 ETag，
+        响应 Cache-Control: private, max-age=86400（key 带 uuid、内容不会变）。
+        只要求已登录的后台会话、不绑定页面权限点：这些对象本身就是 public, immutable 的公开读图片，
+        而图片字段散落在剧集、广告、公告、静态页、白标等多个模块，绑定单一权限点会让其他模块的运营看不到自己的图。
+        key 必须在 img/ 前缀之下，且不含 .. 路径段、空段、绝对路径、反斜杠与查询串 —— 否则 400。
+        对象不是 image/* 或是 image/svg+xml 时也拒绝（避免同源回一个可执行脚本的响应）。
+      tags: [admin-content]
+      security: [{ AdminSession: [] }]
+      parameters:
+        - name: key
+          in: query
+          required: true
+          schema: { type: string, maxLength: 512, pattern: "^img/" }
+          description: 图片对象 key，如 img/drama_cover/01a1-7abc.webp
+      responses:
+        "200":
+          description: 图片字节
+          content:
+            image/webp: { schema: { type: string, format: binary } }
+            image/avif: { schema: { type: string, format: binary } }
+        "304": { description: 命中 If-None-Match }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
 
   # ---------- 转封装（S1-5，docs/specs/S1-5.md）----------
@@ -8470,6 +8613,164 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
 
+  # ---------- 数据看板 / 剧集分析（S4-3 / A4-1，docs/03 第 8 节，只读）----------
+
+  /api/admin/analytics/export:
+    get:
+      summary: 导出数据简报（给 Agent）
+      description: |
+        需要 dashboard.view。把看板概览（本期 vs 上一等长窗口）与热门剧 Top N 打包成一段中文 Markdown 简报
+        （提示词 + 数据表 + 口径），运营复制后粘贴给大模型生成给管理层的摘要。days 默认 7、上限 90，口径同看板。
+      tags: [admin-analytics]
+      security: [{ AdminSession: [] }]
+      parameters:
+        - { name: days, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 90, default: 7 } }
+      responses:
+        "200":
+          description: 数据简报
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - { type: object, properties: { data: { $ref: "#/components/schemas/AdminAnalyticsExport" } } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+
+  /api/admin/analytics/overview:
+    get:
+      summary: 数据看板概览
+      description: |
+        需要 dashboard.view。只读 metric_daily 预聚合表、不扫 event_raw。窗口按北京时间日、一律到昨天为止
+        （今天是 partial，计入会让环比失真）；days 默认 7、上限 90。返回 totals（窗口汇总）、
+        prev（上一等长窗口，供前端自行算环比）与 daily（每日序列，缺日零填充）。
+      tags: [admin-analytics]
+      security: [{ AdminSession: [] }]
+      parameters:
+        - { name: days, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 90, default: 7 } }
+      responses:
+        "200":
+          description: 看板概览
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - { type: object, properties: { data: { $ref: "#/components/schemas/AdminAnalyticsOverview" } } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+
+  /api/admin/analytics/dramas:
+    get:
+      summary: 剧集分析列表
+      description: |
+        需要 analytics_dramas.view。只读 metric_drama_daily 预聚合表并 JOIN 剧取标题 / 状态 / 最新集 / 创建时间。
+        窗口同概览（北京日、到昨天，days 默认 7、上限 90）。按窗口聚合观看规模，标 is_new（创建于窗口内）；
+        sort ∈ {viewers, play_starts, watch_seconds}（默认 viewers）降序，页码分页。
+      tags: [admin-analytics]
+      security: [{ AdminSession: [] }]
+      parameters:
+        - { name: days, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 90, default: 7 } }
+        - { name: sort, in: query, required: false, schema: { type: string, enum: [viewers, play_starts, watch_seconds], default: viewers } }
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: 剧集分析的一页
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - { type: object, properties: { data: { $ref: "#/components/schemas/AdminAnalyticsDramaPage" } } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+
+  /api/admin/analytics/dramas/{id}:
+    get:
+      summary: 单剧分析
+      description: |
+        需要 analytics_dramas.view。只读 metric_drama_daily / metric_episode_daily 预聚合表并 JOIN 剧与分集。
+        窗口口径同列表（北京日、到昨天，days 默认 7、上限 90）。返回剧基本信息 + online_days（创建至今天数）+
+        totals（窗口汇总）/ prev（上一等长窗口，供环比）/ daily（每日序列，缺日零填充）+ episodes（集间留存曲线：
+        按集号升序，retention_pct 相对第 1 集 viewers，窗口内无数据的集补 0）。剧不存在 404。
+      tags: [admin-analytics]
+      security: [{ AdminSession: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+        - { name: days, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 90, default: 7 } }
+      responses:
+        "200":
+          description: 单剧分析
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - { type: object, properties: { data: { $ref: "#/components/schemas/AdminAnalyticsDramaDetail" } } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+
+  # ---------- 收入与成本（A4-1 / S4-3，docs/06 第 23 节）----------
+
+  /api/admin/finance:
+    get:
+      summary: 收入与成本（某月）
+      description: |
+        需要 finance.view。month 为 YYYY-MM，省略取当前北京月。返回运营手填的 5 项收支（人民币分，各带备注）、
+        会员收入自动汇总（membership：按币种总额 totals、按渠道 by_channel、按套餐 by_plan；会员收入不手填，
+        由后台从 pay_order 已支付 vip_plan 订单按 paid_at 北京月汇总，分币种 CNY 分 / USDT micro，退款按原支付月计入、未支付排除），
+        以及 gross_profit_fen 人民币口径毛利。
+      tags: [admin-analytics]
+      security: [{ AdminSession: [] }]
+      parameters:
+        - { name: month, in: query, required: false, schema: { type: string, pattern: '^\d{4}-\d{2}$' } }
+      responses:
+        "200":
+          description: 某月收入与成本
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - { type: object, properties: { data: { $ref: "#/components/schemas/AdminFinanceReport" } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    put:
+      summary: 保存某月手填收支
+      description: |
+        需要 finance.edit。整体保存某月手填的 5 项收支（人民币分，各 ≥ 0 且 ≤ 100 亿元）与备注（各 ≤ 500 字）；
+        会员收入为自动汇总、不可手填。保存后返回与 GET 相同的月报。记审计 finance.save。
+      tags: [admin-analytics]
+      security: [{ AdminSession: [] }]
+      parameters:
+        - { name: month, in: query, required: false, schema: { type: string, pattern: '^\d{4}-\d{2}$' } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminFinanceSaveInput" }
+      responses:
+        "200":
+          description: 保存后的月报
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - { type: object, properties: { data: { $ref: "#/components/schemas/AdminFinanceReport" } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+
   # ---------- 安全中心（A4-4 / S4-8，docs/06 第 39 节，只读）----------
 
   /api/admin/security/login-logs:
@@ -8750,7 +9051,7 @@ components:
         public_key: { type: string, description: 32 字节 X25519 公钥，base64url 无填充 }
     SiteConfig:
       type: object
-      required: [version, site, theme, layout, seo, age_gate, features, addresses, menus, footer_pages, updated_at]
+      required: [version, site, theme, layout, seo, age_gate, features, addresses, media, menus, footer_pages, updated_at]
       properties:
         version: { type: integer, format: int64 }
         site: { type: object, additionalProperties: true }
@@ -8762,6 +9063,7 @@ components:
           type: object
           additionalProperties: { type: boolean }
         addresses: { $ref: "#/components/schemas/SiteAddresses" }
+        media: { $ref: "#/components/schemas/SiteMediaDomains" }
         menus:
           type: array
           description: 前台菜单（S3-2）：只含启用且链接目标当前可见的项，按位置与顺序；visible_to 与 device 由前台判断
@@ -8771,6 +9073,27 @@ components:
           description: 页脚「帮助与条款」的静态页（已发布且标记为页脚页的，按创建顺序，最多 20 个）
           items: { $ref: "#/components/schemas/SiteFooterPage" }
         updated_at: { type: string, format: date-time }
+    SiteMediaDomains:
+      type: object
+      description: |
+        图片与视频线路的域名池，来自后台存储线路表（docs/12 第 6 节，只含 status != disabled 且有 base_url 的线路）。
+        与 /api/v1/lines 不同：这里是全站域名的**全集**（不按地区裁剪、不含签名），因为它要用于生成 CSP，
+        按地区裁剪过的列表会漏掉别的地区用户要访问的域名。线路变更会令 version +1。
+      required: [image_bases, video_origins]
+      properties:
+        image_bases:
+          type: array
+          description: |
+            图片线路的访问前缀（含 base_url 里的路径前缀），按线路优先级倒序、已去重。
+            列表与详情接口返回的封面是相对 key（如 img/drama_cover/xxx.webp），客户端拼在其后，
+            首选加载失败换下一条。为空数组表示后台还没配图片线路，此时客户端只能显示后台手填的完整地址。
+          items: { type: string, example: "https://cdn.example.com" }
+        video_origins:
+          type: array
+          description: |
+            视频线路的 scheme://host[:port]，已去重。切片地址由清单给出，客户端不需要自己拼，
+            这里只用于把域名登记进 Web 的 CSP connect-src（hls.js 用 XHR 取切片）。
+          items: { type: string, example: "https://cdn.example.com" }
     SiteFooterPage:
       type: object
       required: [slug, title]
@@ -9659,7 +9982,7 @@ components:
         mime: { type: string }
         image_format: { type: string, enum: ["", webp, avif] }
         size_bytes: { type: integer, format: int64 }
-        source_key: { type: string, description: 图片为最终 img/ key；视频为私有 video/source/ key }
+        source_key: { type: string, description: 图片为主存储上的最终 img/ key；视频为私有入库桶（MEDIA_SOURCE_BUCKET）里 ingest/ 下的 key，不写主存储 }
         output_key: { type: string, description: 图片 ready 后为 img/ key；广告视频 ready 后为 video/assets/.../master.m3u8；其他状态为空 }
         episode_id: { type: integer, format: int64, description: 非分集视频为 0 }
         transcode_job_id: { type: [string, "null"], format: uuid, description: 分集视频提交后关联的既有转封装任务 }
@@ -9990,12 +10313,13 @@ components:
         expires_at: { type: string, format: date-time, description: 令牌过期时间（签发后 10 分钟） }
     PlaybackSources:
       type: object
-      required: [episode_id, region, access, trial_sec, lines]
+      required: [episode_id, region, access, trial_sec, duration_sec, lines]
       properties:
         episode_id: { type: integer, format: int64 }
         region: { type: string, description: 解析出的地区标签，如 CN-广东-电信；未知地区为 XX }
         access: { type: string, enum: [free, login, vip], description: 分集的观看权限；试看结束后前台据此显示登录墙（login）或 VIP 墙（vip） }
         trial_sec: { type: integer, description: 0 表示完整播放；大于 0 表示只能试看这么多秒（S1-8 的清单只含这段切片） }
+        duration_sec: { type: integer, description: 整集时长（秒），0 表示未知（老产物未回填）；前台据此把进度条显示为整集长度，试看时可播区间只到 trial_sec、其余为锁定段 }
         lines:
           type: array
           minItems: 1
@@ -12725,6 +13049,195 @@ components:
       properties:
         items: { type: array, items: { $ref: "#/components/schemas/DomainRiskItem" } }
         note: { type: string }
+    # ---------- 数据看板 / 剧集分析（S4-3）----------
+    AdminAnalyticsMetrics:
+      type: object
+      description: 一组全站计数类指标（窗口汇总 totals、环比对比段 prev、每日序列 daily 共用同一形状）。
+      required: [uv, play_attempts, play_starts, play_errors, watch_seconds, registrations, reg_wall_views, ad_impressions, ad_clicks]
+      properties:
+        uv: { type: integer, format: int64, description: 去重设备数 }
+        play_attempts: { type: integer, format: int64 }
+        play_starts: { type: integer, format: int64, description: 起播成功 }
+        play_errors: { type: integer, format: int64 }
+        watch_seconds: { type: integer, format: int64, description: 有效观看秒数之和 }
+        registrations: { type: integer, format: int64 }
+        reg_wall_views: { type: integer, format: int64, description: 注册墙曝光 }
+        ad_impressions: { type: integer, format: int64 }
+        ad_clicks: { type: integer, format: int64 }
+    AdminAnalyticsDailyPoint:
+      type: object
+      description: 某一北京日的全站指标（看板每日序列的一项，指标字段与 totals 同形，缺日为零）。
+      allOf:
+        - type: object
+          required: [day]
+          properties:
+            day: { type: string, description: "北京日 YYYY-MM-DD" }
+        - $ref: "#/components/schemas/AdminAnalyticsMetrics"
+    AdminAnalyticsOverview:
+      type: object
+      required: [from, to, days, totals, prev, daily]
+      properties:
+        from: { type: string, description: 窗口起始北京日（含） }
+        to: { type: string, description: 窗口结束北京日（含，为昨天） }
+        days: { type: integer }
+        totals: { $ref: "#/components/schemas/AdminAnalyticsMetrics" }
+        prev: { $ref: "#/components/schemas/AdminAnalyticsMetrics" }
+        daily: { type: array, items: { $ref: "#/components/schemas/AdminAnalyticsDailyPoint" } }
+    AdminAnalyticsDramaStat:
+      type: object
+      required: [id, title, status, latest_episode, created_at, viewers, play_starts, watch_seconds, is_new]
+      properties:
+        id: { type: integer, format: int64 }
+        title: { type: string }
+        status: { type: string }
+        latest_episode: { type: integer }
+        created_at: { type: string, format: date-time }
+        viewers: { type: integer, format: int64 }
+        play_starts: { type: integer, format: int64 }
+        watch_seconds: { type: integer, format: int64 }
+        is_new: { type: boolean, description: 创建于本窗口内（北京日） }
+    AdminAnalyticsDramaPage:
+      type: object
+      required: [list, total, page, page_size, from, to, days, sort]
+      properties:
+        list: { type: array, items: { $ref: "#/components/schemas/AdminAnalyticsDramaStat" } }
+        total: { type: integer, format: int64 }
+        page: { type: integer }
+        page_size: { type: integer }
+        from: { type: string }
+        to: { type: string }
+        days: { type: integer }
+        sort: { type: string, enum: [viewers, play_starts, watch_seconds] }
+    AdminAnalyticsDramaMetrics:
+      type: object
+      description: 单剧的一组观看规模指标（窗口汇总 totals、环比对比段 prev 用，无 day）。
+      required: [viewers, play_starts, watch_seconds]
+      properties:
+        viewers: { type: integer, format: int64 }
+        play_starts: { type: integer, format: int64 }
+        watch_seconds: { type: integer, format: int64 }
+    AdminAnalyticsDramaDay:
+      type: object
+      description: 单剧某北京日的观看规模（每日序列的一项，缺日为零）。
+      allOf:
+        - type: object
+          required: [day]
+          properties:
+            day: { type: string, description: "北京日 YYYY-MM-DD" }
+        - $ref: "#/components/schemas/AdminAnalyticsDramaMetrics"
+    AdminAnalyticsEpisodeRetention:
+      type: object
+      description: 集间留存曲线的一项（按集号升序）。
+      required: [episode_id, number, title, viewers, play_starts, watch_seconds, retention_pct]
+      properties:
+        episode_id: { type: integer, format: int64 }
+        number: { type: integer }
+        title: { type: string }
+        viewers: { type: integer, format: int64 }
+        play_starts: { type: integer, format: int64 }
+        watch_seconds: { type: integer, format: int64 }
+        retention_pct: { type: number, format: float, description: 相对第 1 集 viewers 的留存百分比（第 1 集=100，保留 1 位小数） }
+    AdminAnalyticsDramaDetail:
+      type: object
+      required: [id, title, status, latest_episode, created_at, online_days, from, to, days, totals, prev, daily, episodes]
+      properties:
+        id: { type: integer, format: int64 }
+        title: { type: string }
+        status: { type: string }
+        latest_episode: { type: integer }
+        created_at: { type: string, format: date-time }
+        online_days: { type: integer, description: 从创建日到今天的天数（北京日，含当天，至少 1） }
+        from: { type: string }
+        to: { type: string }
+        days: { type: integer }
+        totals: { $ref: "#/components/schemas/AdminAnalyticsDramaMetrics" }
+        prev: { $ref: "#/components/schemas/AdminAnalyticsDramaMetrics" }
+        daily: { type: array, items: { $ref: "#/components/schemas/AdminAnalyticsDramaDay" } }
+        episodes: { type: array, items: { $ref: "#/components/schemas/AdminAnalyticsEpisodeRetention" } }
+    AdminAnalyticsExport:
+      type: object
+      required: [days, from, to, generated_at, content]
+      properties:
+        days: { type: integer }
+        from: { type: string }
+        to: { type: string }
+        generated_at: { type: string, format: date-time }
+        content: { type: string, description: 给 AI 的中文 Markdown 简报（提示词 + 数据表 + 口径），前端复制给大模型 }
+    # ---------- 收入与成本（A4-1 / S4-3）----------
+    AdminFinanceEntry:
+      type: object
+      description: 某月运营手填的收支（人民币分）。
+      required: [ad_revenue, referral_revenue, traffic_cost, server_cost, payment_fee, ad_note, referral_note, traffic_note, server_note, payment_note, saved, updated_at]
+      properties:
+        ad_revenue: { type: integer, format: int64, description: 广告收入（人民币分） }
+        referral_revenue: { type: integer, format: int64, description: 家族站导流 / 互推收入（分） }
+        traffic_cost: { type: integer, format: int64, description: 视频流量费（分） }
+        server_cost: { type: integer, format: int64, description: 服务器 / 数据库费（分） }
+        payment_fee: { type: integer, format: int64, description: 支付手续费（分） }
+        ad_note: { type: string }
+        referral_note: { type: string }
+        traffic_note: { type: string }
+        server_note: { type: string }
+        payment_note: { type: string }
+        saved: { type: boolean, description: 该月是否保存过 }
+        updated_at: { type: ["string", "null"], format: date-time }
+    AdminFinanceCurrencyTotal:
+      type: object
+      required: [currency, orders, gross, refund, net]
+      properties:
+        currency: { type: string, enum: [CNY, USDT] }
+        orders: { type: integer, format: int64 }
+        gross: { type: integer, format: int64, description: 毛额（CNY 为分，USDT 为 micro-USDT） }
+        refund: { type: integer, format: int64 }
+        net: { type: integer, format: int64, description: 净额 = 毛额 − 退款 }
+    AdminFinanceChannelRevenue:
+      type: object
+      required: [channel, currency, orders, gross, refund]
+      properties:
+        channel: { type: string }
+        currency: { type: string, enum: [CNY, USDT] }
+        orders: { type: integer, format: int64 }
+        gross: { type: integer, format: int64 }
+        refund: { type: integer, format: int64 }
+    AdminFinancePlanRevenue:
+      type: object
+      required: [plan_code, currency, orders, gross, refund]
+      properties:
+        plan_code: { type: string, description: 套餐 code（day / week / month / quarter / year） }
+        currency: { type: string, enum: [CNY, USDT] }
+        orders: { type: integer, format: int64 }
+        gross: { type: integer, format: int64 }
+        refund: { type: integer, format: int64 }
+    AdminFinanceMembership:
+      type: object
+      description: 会员收入自动汇总（不手填）。
+      required: [totals, by_channel, by_plan]
+      properties:
+        totals: { type: array, items: { $ref: "#/components/schemas/AdminFinanceCurrencyTotal" } }
+        by_channel: { type: array, items: { $ref: "#/components/schemas/AdminFinanceChannelRevenue" } }
+        by_plan: { type: array, items: { $ref: "#/components/schemas/AdminFinancePlanRevenue" } }
+    AdminFinanceReport:
+      type: object
+      required: [month, entry, membership, gross_profit_fen]
+      properties:
+        month: { type: string, description: "YYYY-MM" }
+        entry: { $ref: "#/components/schemas/AdminFinanceEntry" }
+        membership: { $ref: "#/components/schemas/AdminFinanceMembership" }
+        gross_profit_fen: { type: integer, format: int64, description: 人民币口径毛利（分），外币会员收入不并入 }
+    AdminFinanceSaveInput:
+      type: object
+      required: [ad_revenue, referral_revenue, traffic_cost, server_cost, payment_fee]
+      properties:
+        ad_revenue: { type: integer, format: int64, minimum: 0 }
+        referral_revenue: { type: integer, format: int64, minimum: 0 }
+        traffic_cost: { type: integer, format: int64, minimum: 0 }
+        server_cost: { type: integer, format: int64, minimum: 0 }
+        payment_fee: { type: integer, format: int64, minimum: 0 }
+        ad_note: { type: string, maxLength: 500 }
+        referral_note: { type: string, maxLength: 500 }
+        traffic_note: { type: string, maxLength: 500 }
+        server_note: { type: string, maxLength: 500 }
+        payment_note: { type: string, maxLength: 500 }
   responses:
     AdminDomainResult:
       description: 保存后的域名

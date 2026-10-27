@@ -11,6 +11,8 @@
 	import { imageSources } from '#lib/media/image.ts';
 	import { immersiveRoute } from '#lib/nav.ts';
 	import RegisterServiceWorker from '#lib/pwa/register-service-worker.svelte';
+	import AdFloat from '#lib/shell/AdFloat.svelte';
+	import AdPopup from '#lib/shell/AdPopup.svelte';
 	import AgeGate from '#lib/shell/AgeGate.svelte';
 	import Announcements from '#lib/shell/Announcements.svelte';
 	import BackToTop from '#lib/shell/BackToTop.svelte';
@@ -98,4 +100,7 @@
 <BackToTop />
 <Toaster />
 <AgeGate />
+<!-- 全站弹窗与 APP 下载浮窗广告位（docs/04 C.5）：没有素材时都不出现 -->
+<AdPopup />
+<AdFloat />
 <RegisterServiceWorker />

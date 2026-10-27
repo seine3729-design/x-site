@@ -299,7 +299,7 @@ func seed(ctx context.Context) error {
 	if _, err := pool.Exec(ctx, `INSERT INTO media_replica (object_id, provider_id, status, replicated_at) VALUES ($1, $2, 'ready', now())`, st.ObjectID, provider.ID); err != nil {
 		return err
 	}
-	if _, err := storage.NewLineService(repo, nil, policy, nil).CreateLine(ctx, storage.LineInput{
+	if _, err := storage.NewLineService(repo, nil, policy, nil, nil).CreateLine(ctx, storage.LineInput{
 		Name: mark + "-本地演示", Kind: storage.LineVideo, RegionScope: storage.ScopeGlobal, ProviderID: provider.ID,
 		AccessMode: storage.AccessCDN, SignType: storage.SignNone, BaseURL: baseURL + "/media", TokenTTL: 600,
 	}); err != nil {

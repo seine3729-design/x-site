@@ -74,6 +74,8 @@ type Config struct {
 	Auth Auth
 	// Platform 是系统功能（配置导出导入，S4-4）的配置（platform.go）。只有 API 进程使用。
 	Platform Platform
+	// Image 是后台图片上传的服务端优化配置（image.go）。只有 API 进程使用；没配 API Key 时功能降级，不阻止启动。
+	Image Image
 }
 
 // EgressPrivateAllowed 表示出站请求是否允许访问内网与保留地址段。
@@ -171,6 +173,9 @@ func (c Config) validate(extra ...string) error {
 		}
 	} else if c.AppEnv == "production" {
 		problems = append(problems, "production 环境必须配置 ADMIN_TOTP_KEKS（后台二次验证 TOTP 种子的包装密钥，S2-6）")
+	}
+	if err := c.Image.Validate(c.AppEnv); err != nil {
+		problems = append(problems, err.Error())
 	}
 	if len(problems) > 0 {
 		return errors.New("配置校验失败: " + strings.Join(problems, "；"))

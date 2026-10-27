@@ -1,0 +1,301 @@
+# 后端（service/）在 Dokploy 上的编排：PostgreSQL + Valkey + 迁移 + API + 两个 worker。
+#
+# Dokploy 里怎么用：
+#   1. 新建 Compose 服务，Compose Type 选 Docker Compose
+#   2. Provider 选 GitHub/Git，分支 main，Compose Path 填 ./service/docker-compose.yml
+#   3. Environment 标签页填下面的变量（密钥用 deploy/prod/scripts/gen-secrets.sh 生成），然后 Deploy
+#
+# **这一份要先部署**：apps / admin / feedback 都要通过 dokploy-network 访问它。
+# 它在网络上的别名固定是 xsite-service（见文件末尾的 networks），所以另外三端一律填
+# `SERVICE_INTERNAL_URL=http://xsite-service:8080`，不用去查 Dokploy 生成的容器名。
+#
+# 对外的入口不在这里（没有自己的域名），但**两条按域名+路径的后端入口挂在本服务上** ——
+# Traefik 的 Docker provider 只能把标签挂在要回源的那个容器上，所以这两条必须写在这里：
+#   https://admin.duanju66.cc/api/admin/*     运营后台的接口（页面与接口必须同源：会话是
+#                                             HttpOnly Cookie，后端还校验 Origin 白名单 + CSRF）
+#   https://feedback.duanju66.cc/open-api/feedback  站外网页直接提交反馈的唯一入口
+# 两条的 priority 都比 admin / feedback 容器上的兜底路由高，所以先被挑走。
+#
+# 启动顺序由 depends_on 保证：postgres/valkey 健康 → migrate 跑完 → service 与 worker 起。
+# production 禁用 AUTO_MIGRATE（启动校验会拒），所以迁移必须由 migrate 这个一次性服务做。
+
+x-restart: &restart
+  restart: unless-stopped
+
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: '20m'
+      max-file: '5'
+
+# api / worker / admintool 三个二进制在同一个镜像里（Dockerfile 的最后一个阶段，distroless）。
+# 不写 target 就是那一个；带 FFmpeg 的 media-worker 阶段在下面单独构建。
+x-image: &image
+  image: ${SERVICE_IMAGE:-xsite-service}:${RELEASE_TAG:-local}
+  build:
+    context: .
+    dockerfile: Dockerfile
+
+# 后端三类进程（api / worker / media-worker）共享同一份配置。
+# 只有某一类需要的项在各自的服务里追加。
+x-service-env: &service-env
+  APP_ENV: production
+  HTTP_ADDR: ':8080'
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  # production 启动校验会拒绝 AUTO_MIGRATE，迁移由 migrate 服务执行
+  AUTO_MIGRATE: 'false'
+  SHUTDOWN_TIMEOUT: ${SHUTDOWN_TIMEOUT:-20s}
+  # 只采信来自容器网络（Traefik、apps、feedback）的 X-Forwarded-For。
+  # 写宽等于让任何人伪造客户端 IP
+  TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.16.0.0/12}
+
+  DATABASE_URL: postgres://${XSITE_APP_USER:-xsite_app}:${XSITE_APP_PASSWORD:?必须设置 XSITE_APP_PASSWORD}@postgres:5432/${XSITE_DB:-xsite}?sslmode=disable
+  DATABASE_RO_URL: postgres://${XSITE_RO_USER:-xsite_ro}:${XSITE_RO_PASSWORD:?必须设置 XSITE_RO_PASSWORD}@postgres:5432/${XSITE_DB:-xsite}?sslmode=disable
+  # 后端用 0 号库，apps 的 BFF 用 1 号库（刻意分开，撞号会让两边的限流计数互相干扰）
+  VALKEY_URL: redis://:${VALKEY_PASSWORD:?必须设置 VALKEY_PASSWORD}@valkey:6379/0
+
+  BFF_SERVICE_TOKEN: ${BFF_SERVICE_TOKEN:?必须设置 BFF_SERVICE_TOKEN（至少 32 字符，与 apps / feedback 一致）}
+  EDGE_SHARED_SECRET: ${EDGE_SHARED_SECRET:?必须设置 EDGE_SHARED_SECRET（至少 32 字符，与 apps 一致）}
+  API_ENC_KEYS: ${API_ENC_KEYS:?必须设置 API_ENC_KEYS}
+  ADMIN_ORIGINS: https://${ADMIN_DOMAIN:-admin.duanju66.cc}
+  ADMIN_TOTP_KEKS: ${ADMIN_TOTP_KEKS:?production 必须设置 ADMIN_TOTP_KEKS}
+  JWT_SIGNING_KEYS: ${JWT_SIGNING_KEYS:?必须设置 JWT_SIGNING_KEYS}
+  PLAY_TOKEN_KEYS: ${PLAY_TOKEN_KEYS:?必须设置 PLAY_TOKEN_KEYS}
+  MEDIA_KEKS: ${MEDIA_KEKS:?必须设置 MEDIA_KEKS}
+  STORAGE_KEKS: ${STORAGE_KEKS:?必须设置 STORAGE_KEKS}
+  LINE_SIGN_KEYS: ${LINE_SIGN_KEYS:?必须设置 LINE_SIGN_KEYS}
+  CONFIG_BACKUP_KEYS: ${CONFIG_BACKUP_KEYS:?必须设置 CONFIG_BACKUP_KEYS}
+
+  # 媒体主存储（docs/12）。MEDIA_SOURCE_BUCKET 是私有入库桶，不能等于公开读的 S3_BUCKET_ASSETS，
+  # 启动校验会拒绝；也不要和前端静态产物的 CDN 桶混用
+  S3_ENDPOINT: ${S3_ENDPOINT:?必须设置 S3_ENDPOINT}
+  S3_REGION: ${S3_REGION:-auto}
+  S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-false}
+  S3_ACCESS_KEY: ${S3_ACCESS_KEY:?必须设置 S3_ACCESS_KEY}
+  S3_SECRET_KEY: ${S3_SECRET_KEY:?必须设置 S3_SECRET_KEY}
+  S3_BUCKET_MEDIA: ${S3_BUCKET_MEDIA:?必须设置 S3_BUCKET_MEDIA}
+  S3_BUCKET_ASSETS: ${S3_BUCKET_ASSETS:?必须设置 S3_BUCKET_ASSETS}
+  MEDIA_SOURCE_BUCKET: ${MEDIA_SOURCE_BUCKET:?必须设置 MEDIA_SOURCE_BUCKET}
+
+  MEDIA_ORPHAN_RETENTION: ${MEDIA_ORPHAN_RETENTION:-720h}
+  MEDIA_CLEANUP_INTERVAL: ${MEDIA_CLEANUP_INTERVAL:-24h}
+  # 后台图片优化。刻意用 :- 而不是 :?：留空只是让后台退回浏览器本地压缩，
+  # 不该因为缺一个第三方 Key 就起不了服务。Key 只到 service，不进任何前端产物
+  IMAGE_TINIFY_API_KEY: ${IMAGE_TINIFY_API_KEY:-}
+  IMAGE_MAX_SIDE: ${IMAGE_MAX_SIDE:-2400}
+  # 没有这个文件时地区一律按未知处理，只有 region_scope=global 的兜底线路会命中
+  GEOIP_XDB_PATH: ${GEOIP_XDB_PATH:-/data/geoip/ip2region.xdb}
+  GEOIP_RELOAD_INTERVAL: ${GEOIP_RELOAD_INTERVAL:-10m}
+
+  OTEL_SERVICE_NAME: xsite-service
+  OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-true}
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+
+services:
+  # ------------------------------------------------------------------ 数据
+  # 镜像从 deploy/local/postgres/ 构建（PG 18 + pg_bigm）。本地与生产共用这一个 Dockerfile：
+  # 中文检索要 pg_bigm，官方镜像没有，两边必须是同一个扩展版本，
+  # 否则本地测得过的查询线上走不了索引。首次构建要编译扩展，约 3–5 分钟。
+  postgres:
+    <<: [*restart, *logging]
+    build:
+      context: ../deploy/local/postgres
+      dockerfile: Dockerfile
+    image: ${POSTGRES_IMAGE:-xsite-postgres}:${RELEASE_TAG:-local}
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?必须设置 POSTGRES_PASSWORD}
+      XSITE_DB: ${XSITE_DB:-xsite}
+      XSITE_APP_USER: ${XSITE_APP_USER:-xsite_app}
+      XSITE_APP_PASSWORD: ${XSITE_APP_PASSWORD}
+      XSITE_RO_USER: ${XSITE_RO_USER:-xsite_ro}
+      XSITE_RO_PASSWORD: ${XSITE_RO_PASSWORD}
+      TZ: UTC
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements,auto_explain
+      - -c
+      - auto_explain.log_min_duration=500ms
+      - -c
+      - log_min_duration_statement=500
+      - -c
+      - max_connections=${PG_MAX_CONNECTIONS:-200}
+      - -c
+      - shared_buffers=${PG_SHARED_BUFFERS:-1GB}
+      - -c
+      - effective_cache_size=${PG_EFFECTIVE_CACHE_SIZE:-3GB}
+    volumes:
+      - pgdata:/var/lib/postgresql
+    # 只绑在本机回环，便于 psql 与 pg_dump；**不要**改成 0.0.0.0。
+    # 默认不是 5432：Dokploy 自己的面板库可能已经占了那个端口
+    ports:
+      - '127.0.0.1:${PG_PORT:-55432}:5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d ${XSITE_DB:-xsite} -h 127.0.0.1']
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    networks:
+      - dokploy-network
+
+  valkey:
+    <<: [*restart, *logging]
+    image: valkey/valkey:9.1
+    environment:
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD}
+    # 两个参数都是刻意的：
+    #   appendonly yes —— xsite: 命名空间里不只有可丢弃的缓存，还有会话、限流计数、
+    #     尚未落库的曝光/搜索计数和榜单本体。不持久化等于每次重启丢数据。
+    #   volatile-lru   —— 只淘汰设了过期时间的键。allkeys-lru 会在内存紧张时把「待落库的计数」
+    #     这类没有 TTL 的有状态数据也淘汰掉，那是静默丢数据。
+    command:
+      - sh
+      - -c
+      - exec valkey-server --requirepass "$$VALKEY_PASSWORD" --appendonly yes --appendfsync everysec
+        --maxmemory ${VALKEY_MAXMEMORY:-1gb} --maxmemory-policy volatile-lru
+    volumes:
+      - valkeydata:/data
+    healthcheck:
+      test: ['CMD-SHELL', 'valkey-cli --no-auth-warning -a "$$VALKEY_PASSWORD" ping | grep -q PONG']
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    networks:
+      - dokploy-network
+
+  # ------------------------------------------------------------------ 迁移（一次性）
+  # 嵌入式 goose，只升不降，与 API 同一次构建（生产镜像是 distroless，里面没有 goose 也没有 shell）。
+  # 失败就停在这里、service 不会起，旧版本继续跑。
+  migrate:
+    <<: [*image, *logging]
+    restart: 'no'
+    entrypoint: ['/app/admintool']
+    command: ['migrate']
+    environment: *service-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - dokploy-network
+
+  # ------------------------------------------------------------------ API
+  service:
+    <<: [*image, *restart, *logging]
+    environment: *service-env
+    expose:
+      - '8080'
+    volumes:
+      # ip2region.xdb 放这个卷里（docker cp 进去，见 docs/14 第 3 节）
+      - geoip:/data/geoip:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    # distroless 镜像里没有 curl / wget / shell，健康检查只能由 api 自己做
+    healthcheck:
+      test: ['CMD', '/app/api', '-healthcheck']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks:
+      dokploy-network:
+        # 固定别名：apps / feedback 用 http://xsite-service:8080 访问，
+        # 不依赖 Dokploy 生成的容器名
+        aliases:
+          - xsite-service
+
+    # Traefik：两条「按域名 + 路径」的后端入口。标签只能挂在要回源的容器上，所以写在这里。
+    # 改用 Dokploy Domains 时这一段删不掉 —— 界面配不出路径前缀。
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      - traefik.http.services.xsite-api.loadbalancer.server.port=8080
+
+      # 运营后台的接口。priority 高于 admin 容器上的兜底路由
+      - traefik.http.routers.xsite-admin-api.rule=Host(`${ADMIN_DOMAIN:-admin.duanju66.cc}`) && PathPrefix(`/api/admin/`)
+      - traefik.http.routers.xsite-admin-api.entrypoints=websecure
+      - traefik.http.routers.xsite-admin-api.tls.certResolver=letsencrypt
+      - traefik.http.routers.xsite-admin-api.service=xsite-api
+      - traefik.http.routers.xsite-admin-api.middlewares=xsite-edge-secret
+      - traefik.http.routers.xsite-admin-api.priority=100
+
+      # 站外网页提交反馈的入口。**只放这一个精确路径**：/open-api/* 其余路径按契约不对外开放，
+      # 也刻意不放 PathPrefix（那会把整组开放接口暴露出去）
+      - traefik.http.routers.xsite-open-feedback.rule=Host(`${FEEDBACK_DOMAIN:-feedback.duanju66.cc}`) && Path(`/open-api/feedback`)
+      - traefik.http.routers.xsite-open-feedback.entrypoints=websecure
+      - traefik.http.routers.xsite-open-feedback.tls.certResolver=letsencrypt
+      - traefik.http.routers.xsite-open-feedback.service=xsite-api
+      - traefik.http.routers.xsite-open-feedback.middlewares=xsite-edge-secret
+      - traefik.http.routers.xsite-open-feedback.priority=100
+
+      # 回源鉴权：直连源站（没有这个头）会被 Go 侧 403。
+      # customRequestHeaders 是覆盖写入，客户端自己带的进不来
+      - traefik.http.middlewares.xsite-edge-secret.headers.customrequestheaders.x-edge-secret=${EDGE_SHARED_SECRET}
+
+      # 刻意不加 buffering 中间件：后台要上传几 GiB 的视频（Go 侧上限 4 GiB），
+      # 加了会先把请求体缓冲到磁盘再转发。也不加 compress：后端只回 JSON，
+      # 量级小且 /api/admin 里有 SSE（资源预热进度），压缩中间件会把事件攒住不发
+
+  # ------------------------------------------------------------------ 异步任务
+  # 通用 worker：不消费媒体队列
+  worker:
+    <<: [*image, *restart, *logging]
+    entrypoint: ['/app/worker']
+    environment:
+      <<: *service-env
+      MEDIA_TRANSCODE_CONCURRENCY: '0'
+    volumes:
+      - geoip:/data/geoip:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - dokploy-network
+
+  # 转封装 worker：带 FFmpeg 的镜像（Dockerfile 的 media-worker 阶段），
+  # 单独一个服务方便按 CPU 单独扩缩。峰值吃内存，服务器要配 swap
+  media-worker:
+    <<: [*restart, *logging]
+    image: ${MEDIA_WORKER_IMAGE:-xsite-media-worker}:${RELEASE_TAG:-local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: media-worker
+    environment:
+      <<: *service-env
+      MEDIA_TRANSCODE_CONCURRENCY: ${MEDIA_TRANSCODE_CONCURRENCY:-1}
+      MEDIA_WORK_DIR: /tmp/xsite-transcode
+      # 资源机账号密码只给 worker
+      FTP_LOCAL_USER: ${FTP_LOCAL_USER:-}
+      FTP_LOCAL_PASSWORD: ${FTP_LOCAL_PASSWORD:-}
+    volumes:
+      - geoip:/data/geoip:ro
+      - transcode_tmp:/tmp/xsite-transcode
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - dokploy-network
+
+volumes:
+  pgdata:
+  valkeydata:
+  geoip:
+  transcode_tmp:
+
+networks:
+  dokploy-network:
+    external: true

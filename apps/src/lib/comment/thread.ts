@@ -141,6 +141,21 @@ export function emojiIndex(packs: readonly EmojiPack[]): Map<string, string> {
 }
 
 /**
+ * 规范化下一页游标。
+ *
+ * 接口的 `next_cursor` 没有 omitempty：没有下一页时下发的是**空字符串**而不是缺省。
+ * 把空串当成「还有下一页」会让无限滚动不停地重新请求第一页（请求风暴 + 列表底部反复重排）。
+ * 顺带防住「游标没前进」：后端若返回与本次用的相同的游标，也当作到底了，避免原地打转。
+ */
+export function nextCursor(raw: string | null | undefined, used?: string): string | undefined {
+	const value = (raw ?? '').trim();
+	if (value === '' || value === used) {
+		return undefined;
+	}
+	return value;
+}
+
+/**
  * 评论列表的请求地址。查询串按键排序、默认值省略：同一组条件只有一个地址，便于命中缓存。
  * 注意路径与查询串参与报文加密的 AAD，拼好后不能再被改写。
  */

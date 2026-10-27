@@ -8,14 +8,14 @@ import { toast } from 'sonner'
 import { z } from 'zod'
 import { formatDateTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import { Button, Card, CardContent, CardHeader, CardTitle, Input } from '@/components/ui'
+import { Button, Card, CardContent, CardHeader, CardTitle } from '@/components/ui'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
-import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form'
+import { Form } from '@/components/ui/form'
 import { WithReason } from '@/features/access/shared'
 import { ImageUploadField } from '@/features/media/upload-field'
 import { contentApi, contentKeys, type DramaDetail } from './api'
 import { BadgeField } from './components/badge-field'
-import { SelectField, SwitchField, TextField } from './components/fields'
+import { DateField, SelectField, SwitchField, TextField } from './components/fields'
 import { dramaToForm, formToDramaInput, fromLocalInput, SLUG_HINT, SLUG_PATTERN, splitList, type DramaForm } from './utils'
 
 const profileSchema = z.object({
@@ -198,24 +198,14 @@ export function ProfileSection({ drama, editable }: { drama: DramaDetail; editab
                   description='「最热」排序时与真实播放量相加。'
                   disabled={disabled}
                 />
-                <FormField
+                <DateField
                   control={form.control}
                   name='publish_at'
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>定时上架</FormLabel>
-                      <div className='flex gap-2'>
-                        <FormControl>
-                          <Input type='datetime-local' disabled={disabled} {...field} />
-                        </FormControl>
-                        <Button type='button' variant='outline' disabled={disabled || !field.value} onClick={() => field.onChange('')}>
-                          清除
-                        </Button>
-                      </div>
-                      <FormDescription>{scheduleHint}</FormDescription>
-                      <FormMessage />
-                    </FormItem>
-                  )}
+                  label='定时上架'
+                  mode='datetime'
+                  placeholder='选填，请选择上架时间'
+                  description={scheduleHint}
+                  disabled={disabled}
                 />
                 <TextField
                   control={form.control}

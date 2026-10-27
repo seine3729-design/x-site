@@ -32,6 +32,7 @@ import { Form } from '@/components/ui/form'
 import { LoadError, WithReason } from '@/features/access/shared'
 import { transcodeJobApi } from '@/features/media/api'
 import { EpisodePreviewDialog } from '@/features/media/preview-dialog'
+import { ImageThumb } from '@/features/media/image-preview'
 import { ImageUploadField, VideoUploadControl } from '@/features/media/upload-field'
 import {
   ACCESS_LABELS,
@@ -140,7 +141,12 @@ export function EpisodesSection({ drama, editable }: { drama: DramaDetail; edita
                 ) : (
                   shown.map((e) => (
                     <TableRow key={e.id}>
-                      <TableCell className='pl-4 tabular-nums'>第 {e.number} 集</TableCell>
+                      <TableCell className='pl-4'>
+                        <div className='flex items-center gap-2'>
+                          <ImageThumb value={e.cover} alt={`第 ${e.number} 集封面`} className='h-10 w-7' />
+                          <span className='whitespace-nowrap tabular-nums'>第 {e.number} 集</span>
+                        </div>
+                      </TableCell>
                       <TableCell>{e.title || <span className='text-muted-foreground'>—</span>}</TableCell>
                       <TableCell className='tabular-nums'>{formatDuration(e.duration_sec)}</TableCell>
                       <TableCell>

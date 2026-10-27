@@ -242,6 +242,8 @@ export type PlaybackSources = {
 	access: EpisodeAccess;
 	/** 0 = 完整播放；大于 0 时清单只含这么多秒 */
 	trial_sec: number;
+	/** 整集时长（秒），0 表示未知（老产物未回填）；进度条据此显示整集长度，试看时可播区间只到 trial_sec */
+	duration_sec: number;
 	lines: PlaybackLine[];
 };
 
@@ -313,6 +315,11 @@ export type CommentView = {
 	author: { is_guest: boolean; user_id?: number; nickname: string; avatar?: string };
 };
 
+/**
+ * 游标分页的一页评论。注意 `next_cursor` 没有 omitempty：**没有下一页时下发的是空字符串**，
+ * 不是缺省。判断「还有下一页」一律用真假值（`#lib/comment/thread.ts` 的 `nextCursor`），
+ * 写成 `!== undefined` 会让无限滚动不停重新请求第一页。
+ */
 export type CommentPage = { list: CommentView[]; next_cursor?: string };
 
 /** POST /api/v1/episodes/{id}/comments 的回执：status=pending 表示要等审核通过才对其他人可见。 */

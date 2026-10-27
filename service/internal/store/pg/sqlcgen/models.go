@@ -8,1040 +8,2020 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+// 广告（docs/02 第 3.4 节）。曝光与点击先在 Valkey 累加，worker 每分钟落库
 type Ad struct {
-	ID           int64
-	Name         string
-	Slot         string
+	// 广告 ID
+	ID int64
+	// 广告名（后台识别用），1–50 字
+	Name string
+	// 广告位：global_popup 全站弹窗 / home_top / home_mid / home_bottom / footer_banner / list_feed 列表信息流 / detail_banner / preroll 片头 / pause 暂停 / immersive_feed 沉浸流 / text_link 文字链 / app_download
+	Slot string
+	// 素材类型：image 图片 / video 视频 / text 文字 / html 自定义。对应素材字段必填（表约束）
 	CreativeType string
-	Image        string
-	VideoUrl     string
-	Text         string
-	Html         string
-	Alt          string
-	ClickUrl     string
-	Device       string
-	Locales      []string
-	Weight       int32
-	EndAt        pgtype.Timestamptz
-	FreqCap      int32
-	Status       string
-	ImpCount     int64
-	ClickCount   int64
-	CreatedAt    pgtype.Timestamptz
-	UpdatedAt    pgtype.Timestamptz
+	// 图片素材相对 key；视频素材时作为封面
+	Image string
+	// 视频素材地址（转码完成后指向 m3u8）
+	VideoUrl string
+	// 文字素材，不超过 200 字
+	Text string
+	// 自定义 HTML，只存 bluemonday 清洗后的结果，不超过 20000 字符；编辑需要 ads.custom_html 权限
+	Html string
+	// 图片 / 视频的无障碍说明，不超过 100 字
+	Alt string
+	// 跳转地址（站内路径或 http(s) 地址）；空串表示不跳转
+	ClickUrl string
+	// 投放设备：all 全部 / mobile 手机 / desktop 电脑
+	Device string
+	// 投放语言；空数组表示全部语言
+	Locales []string
+	// 同一位置内的出现机会（权重 1–100，默认 10）
+	Weight int32
+	// 结束投放时间；为空表示一直投放
+	EndAt pgtype.Timestamptz
+	// 每设备每天（北京时间）曝光上限（0–1000）；0 表示不限
+	FreqCap int32
+	// 状态：active 投放中 / inactive 已停投
+	Status string
+	// 累计曝光数，由 worker 从 Valkey 回写
+	ImpCount int64
+	// 累计点击数，由 worker 从 Valkey 回写
+	ClickCount int64
+	// 创建时间
+	CreatedAt pgtype.Timestamptz
+	// 最近修改时间；只在后台编辑时更新，计数落库不改
+	UpdatedAt pgtype.Timestamptz
 }
 
+// 后台登录记录，安全中心展示（docs/06 第 39 节）。只存 IP 网段与 UA 摘要，保留 180 天
 type AdminLoginLog struct {
-	ID            int64
-	AdminID       pgtype.Int8
+	// 记录 ID
+	ID int64
+	// 命中的管理员；用户名不存在时为空
+	AdminID pgtype.Int8
+	// 本次尝试使用的登录名（原样记录，用于识别撞库）
 	UsernameTried string
-	Result        string
-	IpPrefix      string
-	UaDigest      string
-	CreatedAt     pgtype.Timestamptz
+	// 结果：success 成功 / bad_password 密码错 / inactive 账号停用 / mfa_failed 二次验证失败 / locked 已锁定
+	Result string
+	// 来源 IP 网段（/16），不存完整 IP
+	IpPrefix string
+	// User-Agent 摘要，不存原始 UA
+	UaDigest string
+	// 发生时间
+	CreatedAt pgtype.Timestamptz
 }
 
+// 运营后台媒体上传会话（docs/02 第 4.1b 节）。浏览器只通过受后台会话、CSRF 与所有者校验的同源接口上传；会话不保存凭据，仍由服务端从 provider 当前密文解密读写
 type AdminMediaUpload struct {
-	ID                 pgtype.UUID
-	AdminID            int64
-	Purpose            string
-	Kind               string
-	Mime               string
-	ImageFormat        string
-	SizeBytes          int64
-	SourceKey          string
-	OutputKey          string
-	EpisodeID          pgtype.Int8
-	TranscodeJobID     pgtype.UUID
-	Status             string
-	Progress           int32
-	Attempts           int32
-	Error              string
-	ExpiresAt          pgtype.Timestamptz
-	CreatedAt          pgtype.Timestamptz
-	UpdatedAt          pgtype.Timestamptz
-	ProviderID         pgtype.Int8
-	ProviderEndpoint   string
-	ProviderRegion     string
-	ProviderBucket     string
-	ProviderPathStyle  bool
+	// 会话 ID（UUIDv7）
+	ID pgtype.UUID
+	// 创建者（admin_user）；只有创建者能继续该会话
+	AdminID int64
+	// 用途：drama_cover 剧封面 / episode_cover 分集封面 / announcement_image 公告配图 / ad_image 广告图 / ad_poster 广告封面 / feedback_project_cover 内测项目封面 / static_page_image 静态页配图 / episode_video 分集视频 / ad_video 广告视频
+	Purpose string
+	// 媒体种类：image 图片 / video 视频
+	Kind string
+	// 客户端声明的 MIME 类型，服务端另行校验
+	Mime string
+	// 图片格式：webp / avif；视频时为空串。当前上传只接受 webp
+	ImageFormat string
+	// 文件字节数，必须大于 0
+	SizeBytes int64
+	// 源对象键，全局唯一：图片写 img/<purpose>/，视频写 video/source/
+	SourceKey string
+	// 产物对象键：图片与源相同；广告视频完成后指向 video/assets/<id>/master.m3u8
+	OutputKey string
+	// 分集视频上传时的目标分集；分集删除时置空
+	EpisodeID pgtype.Int8
+	// 分集视频关联的转封装任务；任务删除时置空
+	TranscodeJobID pgtype.UUID
+	// 状态：created 已创建 / uploading 已领取写入权 / uploaded 已上传 / queued 已入队转码 / running 转码中 / ready 可用 / failed 失败
+	Status string
+	// 进度百分比（0–100）
+	Progress int32
+	// 已尝试次数
+	Attempts int32
+	// 失败原因
+	Error string
+	// 会话过期时间；过期后由清理任务删除未完成的对象
+	ExpiresAt pgtype.Timestamptz
+	// 创建时间
+	CreatedAt pgtype.Timestamptz
+	// 最近更新时间
+	UpdatedAt pgtype.Timestamptz
+	// 创建时选中的存储源；后续主存储切换不影响已开始的会话
+	ProviderID pgtype.Int8
+	// 创建时快照的存储端点，避免运营改连接参数后对象写错位置
+	ProviderEndpoint string
+	// 创建时快照的存储区域
+	ProviderRegion string
+	// 创建时快照的桶名
+	ProviderBucket string
+	// 创建时快照的 path-style 寻址开关
+	ProviderPathStyle bool
+	// 创建时快照的桶内前缀
 	ProviderPathPrefix string
 }
 
+// 后台菜单：一级 / 二级两层树（docs/adr/0006）。页面由代码提供，内置项不能删除、路径不能改
 type AdminMenu struct {
-	ID        int64
-	ParentID  pgtype.Int8
-	Kind      string
-	Code      string
-	Title     string
-	Path      string
-	Icon      string
-	Sort      int32
-	Visible   bool
-	Builtin   bool
+	// 菜单 ID
+	ID int64
+	// 上级菜单；一级菜单为空。目录只能是一级（CHECK 约束），上级必须是目录由业务层校验
+	ParentID pgtype.Int8
+	// 类型：group 目录 / page 页面 / link 外链
+	Kind string
+	// 菜单编码，全局唯一；权限点按 <code>.<动作> 命名
+	Code string
+	// 显示标题，1–32 字
+	Title string
+	// 页面为前端路由、外链为 http(s) 地址、目录为空
+	Path string
+	// lucide 图标名
+	Icon string
+	// 同级排序，数字小的在前
+	Sort int32
+	// 是否在侧栏显示；隐藏不影响权限判定
+	Visible bool
+	// 是否内置：内置菜单不能删除，页面路径不能改
+	Builtin bool
+	// 创建时间
 	CreatedAt pgtype.Timestamptz
+	// 最近修改时间
 	UpdatedAt pgtype.Timestamptz
 }
 
+// 后台二次验证 Passkey / WebAuthn 凭据（S2-6）。一个管理员可注册多把
 type AdminPasskey struct {
-	ID           int64
-	AdminID      int64
+	// 凭据记录 ID
+	ID int64
+	// 所属管理员；管理员删除时级联删除
+	AdminID int64
+	// WebAuthn 凭据 ID（原始字节），全局唯一，断言时按它查凭据
 	CredentialID []byte
-	PublicKey    []byte
-	SignCount    int64
-	Transports   []string
-	Name         string
-	CreatedAt    pgtype.Timestamptz
-	LastUsedAt   pgtype.Timestamptz
+	// COSE 格式公钥，用于校验断言签名
+	PublicKey []byte
+	// 签名计数器，防重放：每次断言校验后写回，计数回退即疑似克隆
+	SignCount int64
+	// 可用传输方式（usb / nfc / ble / internal 等），供前端优化选择器
+	Transports []string
+	// 用户给这把钥匙起的名字，便于在列表里区分与删除
+	Name string
+	// 注册时间
+	CreatedAt pgtype.Timestamptz
+	// 最近一次成功断言时间
+	LastUsedAt pgtype.Timestamptz
 }
 
+// 权限点目录：后端按权限点判定。由迁移定义，后台只能授予角色、不能新建
 type AdminPermission struct {
-	Code      string
-	MenuID    int64
-	Name      string
+	// 权限点编码 <页面>.<动作>，如 dramas.edit
+	Code string
+	// 所属页面（admin_menu）；页面删除时级联删除
+	MenuID int64
+	// 动作名称，如「查看」「修改」
+	Name string
+	// 是否高敏操作：命中时需要重新做二次验证（S2-6 起）
 	Sensitive bool
-	Sort      int32
+	// 页面内的展示顺序
+	Sort int32
 }
 
+// 后台角色。超级角色（is_super）拥有全部权限（含以后新增的），全库唯一，不能改权限、停用或删除
 type AdminRole struct {
-	ID          int64
-	Code        string
-	Name        string
+	// 角色 ID
+	ID int64
+	// 角色编码，创建后不能改
+	Code string
+	// 角色名称，1–32 字
+	Name string
+	// 角色说明，不超过 200 字
 	Description string
-	IsSuper     bool
-	Builtin     bool
-	Status      string
-	Sort        int32
-	CreatedAt   pgtype.Timestamptz
-	UpdatedAt   pgtype.Timestamptz
+	// 是否超级角色：自动拥有全部权限点，不存授权行，全库只能有一个
+	IsSuper bool
+	// 是否内置：只有超级管理员为 true
+	Builtin bool
+	// 状态：active 启用 / inactive 停用（停用后成员不能登录）
+	Status string
+	// 列表排序
+	Sort int32
+	// 创建时间
+	CreatedAt pgtype.Timestamptz
+	// 最近修改时间
+	UpdatedAt pgtype.Timestamptz
 }
 
+// 角色授权：角色与权限点的多对多关系。超级角色不存授权行
 type AdminRolePermission struct {
-	RoleID         int64
+	// 角色（admin_role）
+	RoleID int64
+	// 权限点（admin_permission）
 	PermissionCode string
 }
 
+// 运营后台管理员（docs/02 第 6.1 节）。被审计引用后不能物理删除，只能停用；会话存 Valkey
 type AdminUser struct {
-	ID             int64
-	Username       string
-	PasswordHash   string
-	Status         string
-	TotpSecretEnc  pgtype.Text
-	MfaRequired    bool
-	LastLoginAt    pgtype.Timestamptz
-	CreatedAt      pgtype.Timestamptz
-	UpdatedAt      pgtype.Timestamptz
-	RoleID         int64
+	// 管理员 ID
+	ID int64
+	// 登录名：统一存小写，3–32 位，大小写不敏感唯一
+	Username string
+	// 密码哈希（Argon2id 编码串）。人选的口令必须用慢哈希
+	PasswordHash string
+	// 账号状态：active 正常 / inactive 停用 / unused 新建后未登录过（可登录，首次登录后转 active）
+	Status string
+	// TOTP 密钥密文（信封加密，KEK 来自 ADMIN_TOTP_KEK_SECRET）；未开启二次验证时为空
+	TotpSecretEnc pgtype.Text
+	// 是否强制要求二次验证；超级管理员由业务层强制开启
+	MfaRequired bool
+	// 最近一次登录成功时间
+	LastLoginAt pgtype.Timestamptz
+	// 创建时间
+	CreatedAt pgtype.Timestamptz
+	// 最近修改时间
+	UpdatedAt pgtype.Timestamptz
+	// 所属角色（admin_role）
+	RoleID int64
+	// 会话版本：重置密码、强制下线时 +1，旧会话立即作废
 	SessionVersion int32
 }
 
+// 公告（docs/02 第 3.5 节）：顶部滚动条与弹窗。站内信（inbox）暂不启用，业务层拒绝新建
 type Announcement struct {
-	ID        int64
-	Kind      string
-	Content   string
-	ClickUrl  string
+	// 公告 ID
+	ID int64
+	// 形式：topbar 顶部条 / popup 弹窗 / inbox 站内信（暂不启用）
+	Kind string
+	// 公告正文，1–500 字
+	Content string
+	// 点击跳转地址（站内路径或 http(s) 地址）
+	ClickUrl string
+	// 展示频次：always 每次显示 / once 每人一次 / daily 每人每天一次（展示记录存客户端本机）
 	Frequency string
-	Pages     []string
-	Locales   []string
-	Image     string
-	StartAt   pgtype.Timestamptz
-	EndAt     pgtype.Timestamptz
-	Status    string
+	// 出现页面（home/explore/channel/tag/topic/drama/play/shua/rank/search/me）；空数组表示全部页面
+	Pages []string
+	// 投放语言；空数组表示全部语言
+	Locales []string
+	// 弹窗配图（相对 key 或图片地址）
+	Image string
+	// 开始投放时间；为空表示立即生效
+	StartAt pgtype.Timestamptz
+	// 结束投放时间，必须晚于开始时间；为空表示一直投放
+	EndAt pgtype.Timestamptz
+	// 状态：active 显示中 / inactive 已停用
+	Status string
+	// 创建时间
 	CreatedAt pgtype.Timestamptz
+	// 最近修改时间
 	UpdatedAt pgtype.Timestamptz
 }
 
+// 开放平台 API Key（A4-3）：供采集程序等服务端调用方对接。完整密钥仅生成时返回一次
 type ApiKey struct {
-	ID         int64
-	Name       string
-	Owner      string
-	KeyHash    string
-	KeyHint    string
-	Scopes     []string
-	Status     string
-	UsedCount  int64
+	// 密钥记录 ID
+	ID int64
+	// 用途说明（做什么用的），1–60 字
+	Name string
+	// 使用方（给谁用的）
+	Owner string
+	// 完整密钥的 SHA-256。密钥是 32 字节随机串、熵足够高，不需要慢哈希（每个请求都要校验）
+	KeyHash string
+	// 密钥开头几位，供后台识别与搜索（如 xsk_a1b2c3）；之后任何地方都取不回完整密钥
+	KeyHint string
+	// 权限范围：drama.push 推送剧集入库 / analytics.read 只读运营数据
+	Scopes []string
+	// 状态：active 启用 / inactive 停用
+	Status string
+	// 累计调用次数
+	UsedCount int64
+	// 最近调用时间；为空时后台显示「未用过」
 	LastUsedAt pgtype.Timestamptz
-	CreatedBy  int64
-	CreatedAt  pgtype.Timestamptz
-	UpdatedAt  pgtype.Timestamptz
-}
-
-type AuditLog struct {
-	ID         int64
-	AdminID    int64
-	Action     string
-	TargetType string
-	TargetID   string
-	DiffBefore []byte
-	DiffAfter  []byte
-	IpPrefix   string
-	RequestID  string
-	CreatedAt  pgtype.Timestamptz
-	PrevHash   string
-	Hash       string
-}
-
-type Block struct {
-	ID          int64
-	Page        string
-	Type        string
-	Title       string
-	Subtitle    string
-	ItemLimit   int32
-	Status      string
-	MoreLink    string
-	ColsDesktop int32
-	Device      string
-	SourceType  string
-	SourceJson  []byte
-	CustomHtml  string
-	Sort        int32
-	CreatedAt   pgtype.Timestamptz
-	UpdatedAt   pgtype.Timestamptz
-}
-
-type Blockword struct {
-	ID        int64
-	Word      string
-	Group     string
-	Action    string
-	CreatedAt pgtype.Timestamptz
-}
-
-type Comment struct {
-	ID            int64
-	EpisodeID     int64
-	UserID        pgtype.Int8
-	GuestDeviceID pgtype.UUID
-	ParentID      pgtype.Int8
-	Content       string
-	ImageCount    int32
-	Status        string
-	LikeCount     int64
-	CreatedAt     pgtype.Timestamptz
-	DeletedAt     pgtype.Timestamptz
-}
-
-type CommentLike struct {
-	CommentID int64
-	UserID    int64
-	CreatedAt pgtype.Timestamptz
-}
-
-type ConfigBackup struct {
-	ID        int64
-	Format    int32
-	Reason    string
-	AdminID   int64
-	Note      string
-	Payload   []byte
-	Signature string
-	CreatedAt pgtype.Timestamptz
-}
-
-type Danmaku struct {
-	ID            int64
-	EpisodeID     int64
-	UserID        pgtype.Int8
-	GuestDeviceID pgtype.UUID
-	TimeMs        int32
-	Content       string
-	Color         string
-	Status        string
-	CreatedAt     pgtype.Timestamptz
-}
-
-type DomainEntry struct {
-	ID            int64
-	Host          string
-	Role          string
-	Weight        int32
-	Region        string
-	Cdn           string
-	DnsProvider   string
-	CertExpiresAt pgtype.Timestamptz
-	Status        string
-	Note          string
-	CreatedAt     pgtype.Timestamptz
-	UpdatedAt     pgtype.Timestamptz
-}
-
-type DomainHealthDaily struct {
-	Day                 pgtype.Date
-	Host                string
-	Region              string
-	ProbeOk             int64
-	ProbeFail           int64
-	ClientFailoverCount int64
-	FailReasons         []byte
-}
-
-type DomainListRelease struct {
-	Version     int64
-	Payload     []byte
-	Signature   string
-	Note        string
-	PublishedBy pgtype.Int8
-	PublishedAt pgtype.Timestamptz
-}
-
-type Drama struct {
-	ID             int64
-	Title          string
-	Aliases        []string
-	Slug           pgtype.Text
-	Summary        string
-	CoverPortrait  string
-	CoverLandscape string
-	Badge          string
-	Score          pgtype.Numeric
-	Year           pgtype.Int4
-	Status         string
-	PublishAt      pgtype.Timestamptz
-	IsFinished     bool
-	SortWeight     int32
-	ViewBase       int64
-	ViewCount      int64
-	HotScore       int64
-	LatestEpisode  int32
-	SeoTitle       string
-	SeoDesc        string
-	Source         string
-	CreatedAt      pgtype.Timestamptz
-	UpdatedAt      pgtype.Timestamptz
-	DeletedAt      pgtype.Timestamptz
-}
-
-type DramaTag struct {
-	DramaID int64
-	TagID   int64
-}
-
-type DramaTerm struct {
-	DramaID int64
-	TermID  int64
-}
-
-type Emoji struct {
-	ID        int64
-	PackID    int64
-	Code      string
-	Image     string
-	Sort      int32
-	CreatedAt pgtype.Timestamptz
-}
-
-type EmojiPack struct {
-	ID        int64
-	Name      string
-	Sort      int32
-	CreatedAt pgtype.Timestamptz
-}
-
-type Episode struct {
-	ID            int64
-	DramaID       int64
-	Number        int32
-	Title         string
-	VideoObjectID pgtype.Int8
-	Cover         string
-	DurationSec   int32
-	Access        string
-	TrialSec      int32
-	MediaStatus   string
-	Renditions    []byte
-	KeyVer        int32
-	SourceHash    string
-	CreatedAt     pgtype.Timestamptz
-	UpdatedAt     pgtype.Timestamptz
-	Poster        string
-}
-
-type EventRaw struct {
-	OccurredAt pgtype.Timestamptz
-	EventType  string
-	DeviceID   string
-	UserID     pgtype.Int8
-	DramaID    pgtype.Int8
-	EpisodeID  pgtype.Int8
-	Client     string
-	Region     string
-	Isp        string
-	Props      []byte
-}
-
-type FbAnswerHelpful struct {
-	AnswerID  int64
-	UserID    int64
-	CreatedAt pgtype.Timestamptz
-}
-
-type FbApiKey struct {
-	ID                int64
-	ProjectID         int64
-	Name              string
-	KeyHash           string
-	KeyHint           string
-	DefaultVisibility string
-	AllowedOrigins    []string
-	DailyLimit        int32
-	Status            string
-	UsedCount         int64
-	LastUsedAt        pgtype.Timestamptz
-	RevokedAt         pgtype.Timestamptz
-	CreatedBy         int64
-	CreatedAt         pgtype.Timestamptz
-	UpdatedAt         pgtype.Timestamptz
-}
-
-type FbContribution struct {
-	ID         int64
-	UserID     int64
-	ProjectID  pgtype.Int8
-	FeedbackID pgtype.Int8
-	Kind       string
-	Points     int32
-	Reason     string
-	SourceKey  string
-	CreatedAt  pgtype.Timestamptz
-}
-
-type FbFeedback struct {
-	ID             int64
-	ProjectID      int64
-	Number         int64
-	AuthorID       pgtype.Int8
-	Kind           string
-	Title          string
-	Body           string
-	Env            string
-	Visibility     string
-	Status         string
-	Priority       string
-	DuplicateOf    pgtype.Int8
-	VoteCount      int32
-	Version        int32
-	LastActivityAt pgtype.Timestamptz
-	CreatedAt      pgtype.Timestamptz
-	UpdatedAt      pgtype.Timestamptz
-	Source         string
-	ApiKeyID       pgtype.Int8
-	Contact        string
-	PageUrl        string
-}
-
-type FbFeedbackEvent struct {
-	ID           int64
-	FeedbackID   int64
-	FromStatus   string
-	ToStatus     string
-	Note         string
-	InternalNote string
-	ActorAdmin   pgtype.Int8
-	CreatedAt    pgtype.Timestamptz
-}
-
-type FbInvite struct {
-	ID        int64
-	CodeHash  string
-	CodeHint  string
-	ProjectID pgtype.Int8
-	Role      string
-	MaxUses   int32
-	UsedCount int32
-	Note      string
-	ExpiresAt pgtype.Timestamptz
-	RevokedAt pgtype.Timestamptz
+	// 签发人。不加外键：密钥记录要比管理员账号活得久
 	CreatedBy int64
+	// 创建时间
 	CreatedAt pgtype.Timestamptz
-}
-
-type FbInviteRedemption struct {
-	InviteID  int64
-	UserID    int64
-	CreatedAt pgtype.Timestamptz
-}
-
-type FbPost struct {
-	ID          int64
-	ProjectID   int64
-	Kind        string
-	Title       string
-	Body        string
-	Status      string
-	Visibility  string
-	Pinned      bool
-	PublishedAt pgtype.Timestamptz
-	CreatedAt   pgtype.Timestamptz
-	UpdatedAt   pgtype.Timestamptz
-}
-
-type FbProject struct {
-	ID          int64
-	Slug        string
-	KeyPrefix   string
-	Name        string
-	Summary     string
-	Description string
-	Cover       string
-	TryUrl      string
-	Status      string
-	Visibility  string
-	JoinMode    string
-	NextNumber  int64
-	Sort        int32
-	CreatedAt   pgtype.Timestamptz
-	UpdatedAt   pgtype.Timestamptz
-}
-
-type FbProjectMember struct {
-	ProjectID int64
-	UserID    int64
-	Role      string
-	Status    string
-	JoinedAt  pgtype.Timestamptz
-}
-
-type FbTopic struct {
-	ID          int64
-	ProjectID   int64
-	Title       string
-	Body        string
-	AnswerHint  string
-	Status      string
-	Visibility  string
-	Pinned      bool
-	AnswerCount int32
-	EndsAt      pgtype.Timestamptz
-	PublishedAt pgtype.Timestamptz
-	CreatedBy   pgtype.Int8
-	CreatedAt   pgtype.Timestamptz
-	UpdatedAt   pgtype.Timestamptz
-}
-
-type FbTopicAnswer struct {
-	ID           int64
-	TopicID      int64
-	ParentID     pgtype.Int8
-	UserID       pgtype.Int8
-	Body         string
-	Featured     bool
-	HelpfulCount int32
-	Status       string
-	CreatedAt    pgtype.Timestamptz
-	UpdatedAt    pgtype.Timestamptz
-}
-
-type FbUser struct {
-	ID           int64
-	Handle       string
-	HandleNorm   string
-	PasswordHash string
-	// 已废弃（adr/0011）：恢复码功能已删除，此列恒为空串，不再读写。
-	RecoveryCodeHash string
-	Nickname         string
-	Bio              string
-	ShowLevel        bool
-	Status           string
-	SessionVersion   int32
-	Points           int32
-	CreatedAt        pgtype.Timestamptz
-	UpdatedAt        pgtype.Timestamptz
-	TesterNo         int64
-}
-
-type FbVote struct {
-	FeedbackID int64
-	UserID     int64
-	CreatedAt  pgtype.Timestamptz
-}
-
-type Follow struct {
-	UserID    int64
-	DramaID   int64
-	CreatedAt pgtype.Timestamptz
-}
-
-type FtpServer struct {
-	ID        int64
-	Name      string
-	Host      string
-	Port      int32
-	Tls       string
-	Passive   bool
-	CredRef   string
-	Status    string
-	CreatedAt pgtype.Timestamptz
+	// 最近修改时间
 	UpdatedAt pgtype.Timestamptz
 }
 
-type GuestDevice struct {
-	ID            pgtype.UUID
-	FirstSeen     pgtype.Timestamptz
-	SourceChannel string
-	Platform      string
-	AttestLevel   string
-	MergedUserID  pgtype.Int8
-	CreatedAt     pgtype.Timestamptz
-}
-
-type Hotsearch struct {
-	ID             int64
-	Word           string
-	SearchCount    int64
-	MissCount      int64
-	Pinned         bool
-	PinSort        int32
-	Visible        bool
-	Source         string
-	LastSearchedAt pgtype.Timestamptz
-	CreatedAt      pgtype.Timestamptz
-	UpdatedAt      pgtype.Timestamptz
-}
-
-type ImportLog struct {
-	ID              int64
-	Source          string
-	FileName        string
-	RowsTotal       int32
-	DramasCreated   int32
-	DramasUpdated   int32
-	EpisodesCreated int32
-	EpisodesUpdated int32
-	Skipped         int32
-	Rejected        int32
-	TagsCreated     int32
-	AdminID         int64
-	CreatedAt       pgtype.Timestamptz
-}
-
-type Like struct {
-	UserID     int64
+// 审计日志（docs/02 第 6.2 节）。只允许 INSERT，哈希链保证不可篡改；密码与密钥字段写入前脱敏
+type AuditLog struct {
+	// 记录 ID，决定物理顺序；校验哈希链时按它升序走链
+	ID int64
+	// 操作人（admin_user）。外键无级联：被引用的管理员不能物理删除
+	AdminID int64
+	// 动作标识，如 drama.update
+	Action string
+	// 目标实体类型（约 35 种）
 	TargetType string
-	TargetID   int64
-	CreatedAt  pgtype.Timestamptz
+	// 目标主键，用 text 以兼容订单号等非数字编号
+	TargetID string
+	// 变更前内容（脱敏后）
+	DiffBefore []byte
+	// 变更后内容（脱敏后）
+	DiffAfter []byte
+	// 操作来源 IP 网段，不存完整 IP
+	IpPrefix string
+	// 请求 ID，与服务端日志串联
+	RequestID string
+	// 发生时间
+	CreatedAt pgtype.Timestamptz
+	// 上一条记录的 hash；启用哈希链之前的旧记录为空串
+	PrevHash string
+	// SHA256(prev_hash ‖ 各字段)，字段间以 0x1F 分隔；刻意不含 id（插入时才生成，会成循环依赖）
+	Hash string
 }
 
+// 页面区块（docs/02 第 3.1 节）：首页与频道页由区块拼装，单页面最多 50 个。前台 GET /api/v1/home?page= 一次下发该页面全部启用区块及其数据
+type Block struct {
+	// 区块 ID
+	ID int64
+	// 所属页面：home 或 channel:{频道取值 slug}
+	Page string
+	// 区块类型：carousel 轮播 / feature 特写 / poster_grid 海报网格 / h_scroll 横滑 / rank 榜单 / topic_group 专题组 / tag_cloud 标签云 / ad 广告位 / announce 公告条 / custom_html 自定义
+	Type string
+	// 区块标题
+	Title string
+	// 区块副标题
+	Subtitle string
+	// 最多显示几项（1–60，默认 24）。limit 是 SQL 保留字，列名加了 item_ 前缀
+	ItemLimit int32
+	// 状态：active 启用 / inactive 停用
+	Status string
+	// 「查看全部」链接
+	MoreLink string
+	// 电脑端每行个数（2–8，默认 6）
+	ColsDesktop int32
+	// 投放设备：all 全部 / mobile 手机 / desktop 电脑
+	Device string
+	// 剧类区块的来源：manual 指定编号 / topic 用某专题 / auto 按规则选。非剧类区块恒为 auto
+	SourceType string
+	// 来源与类型参数，按类型只存用得到的键：drama_ids / topic_id / {term_codes,tag_id,sort,window} / rank_board / ad_slot / announce_kind / topic_ids / tag_ids
+	SourceJson []byte
+	// 自定义 HTML（白名单清洗后）；编辑需要 blocks.custom_html 权限
+	CustomHtml string
+	// 区块在该页面内的顺序，由后台拖拽调整
+	Sort int32
+	// 创建时间
+	CreatedAt pgtype.Timestamptz
+	// 最近修改时间
+	UpdatedAt pgtype.Timestamptz
+}
+
+// 屏蔽词（docs/02 第 5.7 节）。引擎用 Aho-Corasick 自动机进程内常驻，变更后重建并经 Valkey Pub/Sub 通知各实例。改处理办法 = 先删再加（word 唯一），所以没有更新接口
+type Blockword struct {
+	// 屏蔽词 ID
+	ID int64
+	// 规范化后的词（全角转半角、转小写、去零宽字符与常见插入符号），唯一，不超过 100 字；匹配时对文本做同样规范化
+	Word string
+	// 分组，如「引流」用于识别简介与评论中的联系方式。group 是 SQL 保留字，查询需加双引号
+	Group string
+	// 命中处理：block 直接拦下 / mask 替换成 *** / review 先送审。适用于采集剧名、评论、弹幕、昵称、简介；昵称上 mask 不生效，采集只认 block
+	Action string
+	// 加入时间
+	CreatedAt pgtype.Timestamptz
+}
+
+// 评论（docs/02 第 5.4 节）。状态机 pending 待审 → visible 显示 / hidden 隐藏；先审后显由 site_config.comment_policy 或命中 review 屏蔽词触发
+type Comment struct {
+	// 评论 ID
+	ID int64
+	// 所属分集；分集删除时级联删除
+	EpisodeID int64
+	// 注册用户作者；与 guest_device_id 恰好二选一（CHECK 约束）
+	UserID pgtype.Int8
+	// 游客作者；与 user_id 恰好二选一（CHECK 约束）
+	GuestDeviceID pgtype.UUID
+	// 被回复的评论；为空表示顶层评论
+	ParentID pgtype.Int8
+	// 评论正文，1–500 字
+	Content string
+	// 附图数量；带图评论整条先审后显
+	ImageCount int32
+	// 状态：pending 待审 / visible 显示 / hidden 隐藏
+	Status string
+	// 点赞数；先在 Valkey 累加后回写
+	LikeCount int64
+	// 发表时间
+	CreatedAt pgtype.Timestamptz
+	// 软删除时间：非空表示在回收站
+	DeletedAt pgtype.Timestamptz
+}
+
+// 评论点赞。仅注册用户，游客点赞存本机、不计入公开数
+type CommentLike struct {
+	// 评论；评论删除时级联删除
+	CommentID int64
+	// 用户；用户删除时级联删除
+	UserID int64
+	// 点赞时间
+	CreatedAt pgtype.Timestamptz
+}
+
+// 配置备份（S4-4）：导出的备份正文留一份在库里，导入前自动存档以便回滚
+type ConfigBackup struct {
+	// 备份 ID
+	ID int64
+	// 备份格式版本号
+	Format int32
+	// 产生原因：manual 手动导出 / before_import 导入前自动存档
+	Reason string
+	// 操作人。不加外键：备份要比管理员账号活得久，账号清理后仍需可追溯
+	AdminID int64
+	// 运营填写的备注
+	Note string
+	// 备份正文，与导出文件的 data 段一致
+	Payload []byte
+	// 对「格式版本 + 正文」的 HMAC，导入时校验完整性
+	Signature string
+	// 备份时间
+	CreatedAt pgtype.Timestamptz
+}
+
+// 弹幕（docs/02 第 5.5 节）。播放时按 60 秒窗口按 time_ms 拉取显示中的弹幕
+type Danmaku struct {
+	// 弹幕 ID
+	ID int64
+	// 所属分集；分集删除时级联删除
+	EpisodeID int64
+	// 注册用户作者；与 guest_device_id 恰好二选一（CHECK 约束）
+	UserID pgtype.Int8
+	// 游客作者；与 user_id 恰好二选一（CHECK 约束）
+	GuestDeviceID pgtype.UUID
+	// 出现时间（毫秒，相对视频起点）
+	TimeMs int32
+	// 弹幕正文，1–40 字
+	Content string
+	// 颜色 RRGGBB，默认 FFFFFF；可选值白名单在领域层
+	Color string
+	// 状态：pending 待审 / visible 显示 / hidden 隐藏
+	Status string
+	// 发表时间
+	CreatedAt pgtype.Timestamptz
+}
+
+// 入口域名池（docs/02 第 6.4 节）。证书不入库：入口证书由部署层 ACME 自动签发，后台只维护到期日并在到期前告警
+type DomainEntry struct {
+	// 域名记录 ID
+	ID int64
+	// 域名，全站唯一，1–253 字
+	Host string
+	// 用途：web_primary Web 主入口 / web_backup 备用入口 / nav 永久导航 / api API 域名 / media 媒体域名 / admin 后台
+	Role string
+	// 同角色内的权重（1–100）
+	Weight int32
+	// 适用地区：ISO 3166-1 alpha-2 代码，* 表示全部地区
+	Region string
+	// 所属 CDN 厂商，便于排障
+	Cdn string
+	// DNS 服务商
+	DnsProvider string
+	// 证书到期日；未录入或未上传过证书时为空
+	CertExpiresAt pgtype.Timestamptz
+	// 状态：active 启用 / watch 观察（仍在清单里但排在后面）/ disabled 停用
+	Status string
+	// 运维备注，不超过 200 字
+	Note string
+	// 创建时间
+	CreatedAt pgtype.Timestamptz
+	// 最近修改时间
+	UpdatedAt pgtype.Timestamptz
+}
+
+// 域名健康日表（docs/02 第 6.4 节）。probe_* 来自服务端拨测，client_* 与 fail_reasons 来自客户端切换上报
+type DomainHealthDaily struct {
+	// 统计日
+	Day pgtype.Date
+	// 域名
+	Host string
+	// 探测来源地区，* 表示不区分
+	Region string
+	// 服务端拨测成功次数
+	ProbeOk int64
+	// 服务端拨测失败次数
+	ProbeFail int64
+	// 客户端上报的切换次数
+	ClientFailoverCount int64
+	// 失败原因分布：{"dns":..,"tls":..,"timeout":..,"http5xx":..}
+	FailReasons []byte
+}
+
+// 签名域名清单的发布历史（docs/09 第 4.1 节）。每次发布（含回滚历史版本的内容）都是一个更大的新版本
+type DomainListRelease struct {
+	// 清单版本号，即清单里的 v。由应用层取「当前最大版本 + 1」显式赋值（不用自增）：v 被写进被签名的 payload，发布时要校验两者一致
+	Version int64
+	// 被签名的清单正文（含 v，不含 sig）
+	Payload []byte
+	// 离线签发工具（service/cmd/keytool）签出的 Ed25519 签名的 base64；后台不保存签名私钥
+	Signature string
+	// 发布备注，不超过 200 字
+	Note string
+	// 发布者；账号删除后置空而非级联删除（清单比账号活得久）
+	PublishedBy pgtype.Int8
+	// 发布时间
+	PublishedAt pgtype.Timestamptz
+}
+
+// 剧集（docs/02 第 2.1 节）。状态机 draft ──上架──► published ──下架──► offline；published 且 publish_at > now() 为定时未到点，前台不可见。删除进回收站（deleted_at），30 天后物理删除
+type Drama struct {
+	// 剧编号 #ID，全站引用
+	ID int64
+	// 剧名；建有 pg_bigm 索引供中文模糊搜索
+	Title string
+	// 别名数组，用于搜索与导入去重；索引建在 aliases_text(aliases) 上
+	Aliases []string
+	// 网址别名，可空（前台按 /d/:id 访问）；填写时全站唯一
+	Slug pgtype.Text
+	// 剧情简介
+	Summary string
+	// 竖封面相对 key（后台上传生成的 img/...）
+	CoverPortrait string
+	// 横封面相对 key（后台上传生成的 img/...）
+	CoverLandscape string
+	// 角标文案，如 HOT；空串为不显示
+	Badge string
+	// 评分（运营手填，如 9.9）；NULL 表示未填
+	Score pgtype.Numeric
+	// 年份（1900–2100）；NULL 表示未填
+	Year pgtype.Int4
+	// 状态：draft 草稿 / published 已上架 / offline 已下架
+	Status string
+	// 定时上架时间；NULL 表示未设置，晚于当前时间时前台不可见
+	PublishAt pgtype.Timestamptz
+	// 是否完结
+	IsFinished bool
+	// 「推荐」排序权重，越大越靠前
+	SortWeight int32
+	// 初始播放量（运营填的虚量），热度排序时与真实播放量相加
+	ViewBase int64
+	// 真实播放量；先在 Valkey 累加，worker 周期回写
+	ViewCount int64
+	// 冗余列：热度分，定时任务按 view_base + view_count 刷新，供 (status, hot_score desc, id desc) 游标分页
+	HotScore int64
+	// 冗余列：前台可见的最大集号（「更新至 N 集」），只算 media_status=ready 的分集
+	LatestEpisode int32
+	// SEO 标题；空串时按站点模板生成
+	SeoTitle string
+	// SEO 描述；空串时按站点模板生成
+	SeoDesc string
+	// 来源标识（采集批次），与 import_log.source 对应
+	Source string
+	// 创建时间
+	CreatedAt pgtype.Timestamptz
+	// 最近修改时间
+	UpdatedAt pgtype.Timestamptz
+	// 软删除时间：非空表示在回收站，30 天后物理清理
+	DeletedAt pgtype.Timestamptz
+}
+
+// 剧集与标签的多对多关系。反向索引 (tag_id, drama_id) 供按标签查剧
+type DramaTag struct {
+	// 剧集（drama）
+	DramaID int64
+	// 标签（tag）
+	TagID int64
+}
+
+// 剧集与维度取值的多对多关系。单选维度每部剧只能有一个取值，由业务层保存时替换
+type DramaTerm struct {
+	// 剧集（drama）
+	DramaID int64
+	// 维度取值（taxonomy_term）
+	TermID int64
+}
+
+// 表情（docs/02 第 5.8 节）。供前台 GET /api/v1/emojis 下发，评论里按 code 渲染
+type Emoji struct {
+	// 表情 ID
+	ID int64
+	// 所属表情包；表情包删除时级联删除
+	PackID int64
+	// 评论里的表情码，如 [微笑]，全站唯一
+	Code string
+	// 表情图片相对 key
+	Image string
+	// 包内展示顺序
+	Sort int32
+	// 创建时间
+	CreatedAt pgtype.Timestamptz
+}
+
+// 表情包（docs/02 第 5.8 节）：表情的分组
+type EmojiPack struct {
+	// 表情包 ID
+	ID int64
+	// 表情包名称
+	Name string
+	// 展示顺序
+	Sort int32
+	// 创建时间
+	CreatedAt pgtype.Timestamptz
+}
+
+// 分集（docs/02 第 2.2 节）。(drama_id, number) 唯一；直接删除不进回收站，剧物理删除时级联删除
+type Episode struct {
+	// 分集 ID
+	ID int64
+	// 所属剧；剧删除时级联删除
+	DramaID int64
+	// 集号（第几集），大于 0
+	Number int32
+	// 本集标题，可留空
+	Title string
+	// 当前使用的视频对象（media_object），转封装完成时写入；被引用的媒体对象不能删除
+	VideoObjectID pgtype.Int8
+	// 本集封面相对 key（后台上传生成的 img/...）
+	Cover string
+	// 时长（秒）；为 0 时由转封装的探测结果回填，已填写的不覆盖
+	DurationSec int32
+	// 观看门槛：free 免费 / login 登录可看 / vip 会员可看（非会员按 trial_sec 试看）
+	Access string
+	// 非会员可试看秒数，0 表示不试看
+	TrialSec int32
+	// 媒体状态：pending 没有视频 / transcoding 首次转封装中 / ready 可播放 / failed 转封装失败。已 ready 的分集重新转封装时保持 ready
+	MediaStatus string
+	// 当前产物的码率阶梯 [{name,width,height,bitrate,peak_bitrate,codecs}]，从低到高；码率为 bps，codecs 为 RFC 6381 编码
+	Renditions []byte
+	// 当前产物使用的 HLS 内容密钥版本（密钥本身在 media_key）；0 表示尚未生成
+	KeyVer int32
+	// 当前产物的源文件 SHA-256，转封装任务的幂等键
+	SourceHash string
+	// 创建时间
+	CreatedAt pgtype.Timestamptz
+	// 最近修改时间
+	UpdatedAt pgtype.Timestamptz
+	// 首帧图（WebP，图片存储中的相对 key），转封装生成，播放器出画面前显示
+	Poster string
+}
+
+// 原始埋点事件（docs/02 第 6.3 / 6.3.1 节）：前台与 APP 经 POST /api/v1/events 批量上报，服务端校验后 COPY 入库。按天 RANGE 分区（occurred_at 为 UTC 日界），只保留 occurred_at BRIN 与 device_id 两条索引；汇总查询走 metric_* 预聚合表，90 天后导出 Parquet 并 DETACH/DROP。日分区由周期任务滚动创建，PG 不会把本注释传播到分区
+type EventRaw struct {
+	// 事件发生时间（UTC），分区键
+	OccurredAt pgtype.Timestamptz
+	// 事件类型：visitor / play_attempt / play_start / play_error / watch / ad_impression / ad_click / register_wall / register / domain_switch 等。白名单在应用层，不加 CHECK 以便扩展
+	EventType string
+	// 上报设备标识，用于去重算 UV
+	DeviceID string
+	// 注册用户；游客为空
+	UserID pgtype.Int8
+	// 相关剧集（播放类事件）
+	DramaID pgtype.Int8
+	// 相关分集（播放类事件）
+	EpisodeID pgtype.Int8
+	// 客户端：web / app 等
+	Client string
+	// 国家地区（GeoIP 解析，可空）
+	Region string
+	// 运营商（GeoIP 解析，可空）
+	Isp string
+	// 事件自有属性（错误码、广告位、观看秒数等）
+	Props []byte
+}
+
+// 「有道理」：一个用户对一条回答只能点一次
+type FbAnswerHelpful struct {
+	// 回答；删除时级联删除
+	AnswerID int64
+	// 点击用户；用户删除时级联删除
+	UserID int64
+	// 点击时间
+	CreatedAt pgtype.Timestamptz
+}
+
+// 开放提交接口的 API Key：其他网站把用户反馈送进来，运营后台统一分诊。明文只在创建时返回一次
+type FbApiKey struct {
+	// Key 记录 ID
+	ID int64
+	// 送入的目标项目；项目删除时级联删除
+	ProjectID int64
+	// 用途说明，1–60 字
+	Name string
+	// 完整密钥的哈希，唯一；明文不入库
+	KeyHash string
+	// 密钥开头几位，供后台识别
+	KeyHint string
+	// 送入反馈的默认可见范围，默认 members：外部提交先进后台分诊，由运营决定是否转公开
+	DefaultVisibility string
+	// 允许的浏览器 Origin；空数组表示不校验来源
+	AllowedOrigins []string
+	// 每日提交上限（1–100000），默认 500
+	DailyLimit int32
+	// 状态：active 启用 / inactive 停用
+	Status string
+	// 累计提交次数
+	UsedCount int64
+	// 最近使用时间
+	LastUsedAt pgtype.Timestamptz
+	// 作废时间；非空表示已失效
+	RevokedAt pgtype.Timestamptz
+	// 签发的后台管理员；有 Key 的管理员不能删除（ON DELETE RESTRICT）
+	CreatedBy int64
+	// 创建时间
+	CreatedAt pgtype.Timestamptz
+	// 最近修改时间
+	UpdatedAt pgtype.Timestamptz
+}
+
+// 贡献事件：只追加，撤销写反向分（feedback/docs/adr/0005，非货币化）
+type FbContribution struct {
+	// 记录 ID
+	ID int64
+	// 获得贡献的用户；用户删除时级联删除
+	UserID int64
+	// 相关项目；项目删除时置空
+	ProjectID pgtype.Int8
+	// 相关反馈；反馈删除时置空
+	FeedbackID pgtype.Int8
+	// 类型：triaged 被分诊 / shipped 被采纳上线 / helped 回答被认可 / topic 参与议题 / manual 人工调整 / reverse 撤销反向分
+	Kind string
+	// 本次分值，可为负（reverse）
+	Points int32
+	// 说明，不超过 200 字
+	Reason string
+	// 自动事件的幂等键（如 shipped:123），唯一，防重复发分
+	SourceKey string
+	// 发生时间
+	CreatedAt pgtype.Timestamptz
+}
+
+// 反馈。number 在项目内连续，展示为 <key_prefix>-<number>
+type FbFeedback struct {
+	// 反馈 ID（内部）
+	ID int64
+	// 所属项目；项目删除时级联删除
+	ProjectID int64
+	// 项目内编号，与 project_id 组成唯一约束
+	Number int64
+	// 提交的社区用户；注销后置空，保留反馈与状态历史
+	AuthorID pgtype.Int8
+	// 类型：bug 缺陷 / experience 体验 / feature 需求 / content 内容 / access 访问 / competitor 竞品发现 / other 其他
+	Kind string
+	// 标题，4–160 字
+	Title string
+	// 正文，1–20000 字
+	Body string
+	// 环境上下文（机型、浏览器、网络等），不超过 500 字，不含精确位置
+	Env string
+	// 可见范围：public 公开 / members 仅成员 / private 仅本人与团队
+	Visibility string
+	// 状态：submitted 待分诊 / triaged 已分诊 / planned 已排期 / in_progress 处理中 / verifying 待验证 / shipped 已上线 / closed 已关闭 / duplicate 重复 / declined 不做
+	Status string
+	// 优先级：critical / high / medium / low / unset 未定
+	Priority string
+	// 重复指向的主反馈；status=duplicate 时必须非空，其他状态必须为空（CHECK 约束）
+	DuplicateOf pgtype.Int8
+	// 赞同票数（fb_vote 的缓存）
+	VoteCount int32
+	// 乐观锁版本号，后台保存时比对，防并发覆盖
+	Version int32
+	// 最近活动时间，列表按它倒序
+	LastActivityAt pgtype.Timestamptz
+	// 提交时间
+	CreatedAt pgtype.Timestamptz
+	// 最近修改时间
+	UpdatedAt pgtype.Timestamptz
+	// 来源：community 社区用户自己提交 / open_api 外部网站经 API Key 送入
+	Source string
+	// 送入本条的开放接口 Key；source=open_api 时必须非空（CHECK 约束）
+	ApiKeyID pgtype.Int8
+	// 提交者自愿留的联系方式（外部提交无账号时回访用），不超过 120 字；不做校验、不外发
+	Contact string
+	// 出问题的页面地址，只存站内路径或脱敏后的地址，不超过 500 字
+	PageUrl string
+}
+
+// 反馈状态历史：只追加，不更新
+type FbFeedbackEvent struct {
+	// 记录 ID
+	ID int64
+	// 所属反馈；反馈删除时级联删除
+	FeedbackID int64
+	// 变更前状态；首条为空串
+	FromStatus string
+	// 变更后状态
+	ToStatus string
+	// 公开说明，不超过 1000 字，提交者可见
+	Note string
+	// 内部备注，不超过 1000 字，只给后台
+	InternalNote string
+	// 操作的后台管理员；账号删除时置空
+	ActorAdmin pgtype.Int8
+	// 发生时间
+	CreatedAt pgtype.Timestamptz
+}
+
+// 邀请码。明文只在创建时返回一次，库里只存哈希
+type FbInvite struct {
+	// 邀请码 ID
+	ID int64
+	// 邀请码哈希，唯一；明文不入库
+	CodeHash string
+	// 邀请码前 4 位，供运营辨认
+	CodeHint string
+	// 自动加入的项目；为空表示只注册、不自动加入
+	ProjectID pgtype.Int8
+	// 核销后获得的项目角色：member / operator / maintainer
+	Role string
+	// 最多可核销次数（1–10000）
+	MaxUses int32
+	// 已核销次数，不得超过 max_uses（CHECK 约束）
+	UsedCount int32
+	// 运营备注，不超过 100 字
+	Note string
+	// 过期时间；为空表示不过期
+	ExpiresAt pgtype.Timestamptz
+	// 作废时间；非空表示已失效
+	RevokedAt pgtype.Timestamptz
+	// 签发的后台管理员；有邀请码的管理员不能删除（ON DELETE RESTRICT）
+	CreatedBy int64
+	// 创建时间
+	CreatedAt pgtype.Timestamptz
+}
+
+// 邀请核销记录：一个用户对同一邀请只能核销一次
+type FbInviteRedemption struct {
+	// 邀请码；删除时级联删除
+	InviteID int64
+	// 核销用户；用户删除时级联删除
+	UserID int64
+	// 核销时间
+	CreatedAt pgtype.Timestamptz
+}
+
+// 项目动态：公告、测试任务、上线小结。只有项目团队能发（成员不能发讨论帖）
+type FbPost struct {
+	// 动态 ID
+	ID int64
+	// 所属项目；项目删除时级联删除
+	ProjectID int64
+	// 类型：announcement 公告 / test_task 测试任务 / changelog 上线小结
+	Kind string
+	// 标题，1–120 字
+	Title string
+	// 正文：受限 Markdown 源文，不超过 50000 字
+	Body string
+	// 状态：draft 草稿 / published 已发布 / hidden 已隐藏
+	Status string
+	// 可见范围：public 公开 / members 仅成员
+	Visibility string
+	// 是否置顶
+	Pinned bool
+	// 发布时间；status=published 时必须非空（CHECK 约束）
+	PublishedAt pgtype.Timestamptz
+	// 创建时间
+	CreatedAt pgtype.Timestamptz
+	// 最近修改时间
+	UpdatedAt pgtype.Timestamptz
+}
+
+// 内测项目。只有平台管理员能创建（feedback/docs/adr/0001）
+type FbProject struct {
+	// 项目 ID
+	ID int64
+	// 项目别名，全站唯一，小写短横线格式
+	Slug string
+	// 反馈编号前缀（大写字母开头，2–8 位），唯一；反馈展示为 APP-1024 这种形式
+	KeyPrefix string
+	// 项目名称，1–60 字
+	Name string
+	// 一句话简介，不超过 200 字
+	Summary string
+	// 项目详情，不超过 10000 字
+	Description string
+	// 项目封面相对 key
+	Cover string
+	// 「去试用」地址，只允许 https
+	TryUrl string
+	// 状态：draft 草稿 / recruiting 招募中 / active 进行中 / paused 暂停 / archived 已归档
+	Status string
+	// 可见范围：public 公开 / members 仅成员
+	Visibility string
+	// 加入方式：open 自由加入 / application 需申请 / invite_only 仅邀请 / closed 已关闭
+	JoinMode string
+	// 项目内反馈编号计数器，在事务内分配，保证编号连续
+	NextNumber int64
+	// 列表排序
+	Sort int32
+	// 创建时间
+	CreatedAt pgtype.Timestamptz
+	// 最近修改时间
+	UpdatedAt pgtype.Timestamptz
+}
+
+// 项目成员。owner / maintainer / operator 属于项目团队，member 是测试成员
+type FbProjectMember struct {
+	// 项目；项目删除时级联删除
+	ProjectID int64
+	// 社区用户；用户删除时级联删除
+	UserID int64
+	// 角色：member 测试成员 / operator 运营 / maintainer 维护者 / owner 拥有者
+	Role string
+	// 状态：pending 待通过 / active 正常 / removed 已移除
+	Status string
+	// 加入时间
+	JoinedAt pgtype.Timestamptz
+}
+
+// 议题：官方抛运营向问题，用户自由回答（feedback/docs/01 第 11 节）。首期只做自由回答，单选 / 多选议题等确认后再加
+type FbTopic struct {
+	// 议题 ID
+	ID int64
+	// 所属项目；项目删除时级联删除
+	ProjectID int64
+	// 议题标题，1–160 字
+	Title string
+	// 议题正文，不超过 20000 字
+	Body string
+	// 回答框的引导语，不超过 200 字
+	AnswerHint string
+	// 状态：draft 草稿 / open 征集中 / closed 已结束 / archived 已归档
+	Status string
+	// 可见范围：public 公开 / members 仅成员
+	Visibility string
+	// 是否置顶
+	Pinned bool
+	// 回答数（fb_topic_answer 的缓存）
+	AnswerCount int32
+	// 征集截止时间；为空表示不限
+	EndsAt pgtype.Timestamptz
+	// 发布时间；非草稿时必须非空（CHECK 约束）
+	PublishedAt pgtype.Timestamptz
+	// 创建的后台管理员；账号删除时置空
+	CreatedBy pgtype.Int8
+	// 创建时间
+	CreatedAt pgtype.Timestamptz
+	// 最近修改时间
+	UpdatedAt pgtype.Timestamptz
+}
+
+// 议题回答。只允许一层回复：回复的回复挂到同一个顶层回答下
+type FbTopicAnswer struct {
+	// 回答 ID
+	ID int64
+	// 所属议题；议题删除时级联删除
+	TopicID int64
+	// 被回复的顶层回答；为空表示本身是顶层回答
+	ParentID pgtype.Int8
+	// 回答用户；注销后置空，保留内容
+	UserID pgtype.Int8
+	// 回答正文，1–5000 字
+	Body string
+	// 是否运营标记的「精选」，列表优先展示
+	Featured bool
+	// 「有道理」计数（fb_answer_helpful 的缓存）
+	HelpfulCount int32
+	// 状态：visible 显示 / hidden 隐藏
+	Status string
+	// 发表时间
+	CreatedAt pgtype.Timestamptz
+	// 最近修改时间
+	UpdatedAt pgtype.Timestamptz
+}
+
+// 反馈社区用户。账号只有用户名 + 密码，不收集邮箱与手机号；无找回密码手段（feedback/docs/adr/0011）
+type FbUser struct {
+	// 社区用户 ID
+	ID int64
+	// 用户名（保留原始大小写），3–32 位 [A-Za-z0-9_-]
+	Handle string
+	// handle 的小写形式，唯一；用来实现大小写不敏感的唯一性
+	HandleNorm string
+	// 密码哈希（Argon2id PHC 串）
+	PasswordHash string
+	// 已废弃（adr/0011）：恢复码功能已删除，此列恒为空串，不再读写。刻意不 DROP COLUMN，以便整体回滚且不改动 sqlc 生成的字段类型
+	RecoveryCodeHash string
+	// 展示昵称，不超过 40 字
+	Nickname string
+	// 个人简介，不超过 300 字
+	Bio string
+	// 是否公开贡献等级与署名
+	ShowLevel bool
+	// 状态：active 正常 / restricted 受限 / suspended 封禁
+	Status string
+	// 会话版本：改密、重置、封禁时 +1，旧会话立即失效
+	SessionVersion int32
+	// 贡献值缓存，可由 fb_contribution 重算
+	Points int32
+	// 注册时间
+	CreatedAt pgtype.Timestamptz
+	// 最近修改时间
+	UpdatedAt pgtype.Timestamptz
+	// 内测编号（从 1001 起），展示为「内测1001」；一旦分配不再变化，注销也不回收
+	TesterNo int64
+}
+
+// 反馈投票：一个用户对一条反馈只能一票
+type FbVote struct {
+	// 反馈；删除时级联删除
+	FeedbackID int64
+	// 投票用户；用户删除时级联删除
+	UserID int64
+	// 投票时间
+	CreatedAt pgtype.Timestamptz
+}
+
+// 收入与成本（docs/02 第 6.5 节）：运营按月手填收支，供数据看板核算毛利。会员收入不手填，由 pay_order 已支付订单自动汇总。金额一律存人民币分
+type FinanceMonthly struct {
+	// 统计月份，存当月 1 号（北京月）
+	Month pgtype.Date
+	// 本月广告收入（分）
+	AdRevenue int64
+	// 家族站导流 / 互推收入（分）
+	ReferralRevenue int64
+	// 视频流量费（分）
+	TrafficCost int64
+	// 服务器与数据库费（分）
+	ServerCost int64
+	// 支付手续费（分）
+	PaymentFee int64
+	// 广告收入备注，不超过 500 字
+	AdNote string
+	// 导流收入备注，不超过 500 字
+	ReferralNote string
+	// 流量费备注，不超过 500 字
+	TrafficNote string
+	// 服务器费备注，不超过 500 字
+	ServerNote string
+	// 手续费备注，不超过 500 字
+	PaymentNote string
+	// 最近填写时间
+	UpdatedAt pgtype.Timestamptz
+}
+
+// 收藏（追剧，docs/02 第 5.3 节）。只存注册用户，游客收藏存本机、不计入公开数
+type Follow struct {
+	// 用户；用户删除时级联删除
+	UserID int64
+	// 剧集；剧物理删除时级联删除
+	DramaID int64
+	// 收藏时间；列表按它倒序
+	CreatedAt pgtype.Timestamptz
+}
+
+// 资源机 FTP（docs/02 第 4.2 节）。账号密码不入库，由 worker 从环境变量读取。设置类数据，删除不进回收站
+type FtpServer struct {
+	// 资源机 ID
+	ID int64
+	// 资源机名称，1–64 字
+	Name string
+	// 域名或 IP，统一存小写
+	Host string
+	// 端口，默认 21
+	Port int32
+	// 加密方式：none 不加密 / explicit 显式 TLS（AUTH TLS）/ implicit 隐式 TLS。非开发环境只允许 explicit
+	Tls string
+	// 是否被动模式。目前只支持 true：主动模式需要资源机回连 worker
+	Passive bool
+	// 凭据引用（大写字母开头，≤32 位，可多台共用）：worker 读环境变量 FTP_<cred_ref>_USER / FTP_<cred_ref>_PASSWORD
+	CredRef string
+	// 状态：active 启用 / inactive 停用
+	Status string
+	// 创建时间
+	CreatedAt pgtype.Timestamptz
+	// 最近修改时间
+	UpdatedAt pgtype.Timestamptz
+}
+
+// 游客设备（docs/02 第 5.1 节）：设备级游客身份，服务端生成 UUIDv7，不存任何硬件标识
+type GuestDevice struct {
+	// 设备 ID（UUIDv7），由服务端生成
+	ID pgtype.UUID
+	// 首次出现时间，后台游客列表按它倒序
+	FirstSeen pgtype.Timestamptz
+	// 来源渠道标识（推广落地页等）
+	SourceChannel string
+	// 平台：web / ios / android
+	Platform string
+	// 设备可信度：none 无 / basic 基础 / strong 强（APP 设备证明）
+	AttestLevel string
+	// 登录后并入的账号；账号删除时置空。仅用于统计
+	MergedUserID pgtype.Int8
+	// 记录创建时间
+	CreatedAt pgtype.Timestamptz
+}
+
+// 热搜词（docs/02 第 3.7 节）。搜索次数先在 Valkey 累加、worker 每小时落库；热搜榜取显示中的词，置顶在前，其余按次数倒序，共 10 个
+type Hotsearch struct {
+	// 热搜词 ID
+	ID int64
+	// 规范化后的搜索词（全角转半角、去控制字符、转小写、合并空白），唯一，1–50 字
+	Word string
+	// 累计搜索次数
+	SearchCount int64
+	// 搜了但片库没有结果的次数，用于发现缺片
+	MissCount int64
+	// 是否置顶（最多 10 个）；置顶的词一定显示（CHECK 约束）
+	Pinned bool
+	// 置顶顺序，从 1 开始；未置顶为 0
+	PinSort int32
+	// 是否在热搜榜显示。auto 收录的词默认不显示，manual 添加的默认显示
+	Visible bool
+	// 来源：manual 后台手动添加 / auto 按搜索行为自动收录
+	Source string
+	// 最近一次落库时有搜索的时间（按小时）
+	LastSearchedAt pgtype.Timestamptz
+	// 创建时间
+	CreatedAt pgtype.Timestamptz
+	// 最近修改时间；只在后台修改时更新，计数落库不改
+	UpdatedAt pgtype.Timestamptz
+}
+
+// 批量导入批次（docs/06 第 8 节，A4-2 / S4-6）：只记正式导入，预览不写这张表
+type ImportLog struct {
+	// 批次 ID
+	ID int64
+	// 来源标识，运营填写，会写进 drama.source（采集批次）
+	Source string
+	// 导入的文件名，只用于让运营认出是哪一批
+	FileName string
+	// 文件总行数
+	RowsTotal int32
+	// 新建的剧数
+	DramasCreated int32
+	// 更新的剧数
+	DramasUpdated int32
+	// 新建的分集数。CSV 导入恒为 0（CSV 列里没有分集信息），保留以便与 FTP 扫描、开放平台推送共用同一套口径
+	EpisodesCreated int32
+	// 更新的分集数。CSV 导入恒为 0，同上
+	EpisodesUpdated int32
+	// 跳过行数：行本身没法用（剧名为空）或文件内重复
+	Skipped int32
+	// 被拒行数：命中屏蔽词（采集只认 block 动作）
+	Rejected int32
+	// 自动新建的标签数
+	TagsCreated int32
+	// 操作人。不加外键：批次记录要比管理员账号活得久
+	AdminID int64
+	// 导入时间
+	CreatedAt pgtype.Timestamptz
+}
+
+// 点赞（docs/02 第 5.3 节）：可点赞剧或分集。只存注册用户，游客点赞存本机、不计入公开数。like 是 SQL 保留字，查询需加双引号
+type Like struct {
+	// 用户；用户删除时级联删除
+	UserID int64
+	// 目标类型：drama 剧 / episode 分集
+	TargetType string
+	// 目标主键，按 target_type 多态（不建外键）
+	TargetID int64
+	// 点赞时间；列表按它倒序
+	CreatedAt pgtype.Timestamptz
+}
+
+// HLS 内容密钥（docs/02 第 6.4 节）。每次转封装生成一把新的 16 字节 AES-128 密钥，key_ver 按分集从 1 递增；旧版本保留到旧产物清理
 type MediaKey struct {
-	EpisodeID  int64
-	KeyVer     int32
+	// 所属分集；分集删除时级联删除
+	EpisodeID int64
+	// 密钥版本，按分集从 1 递增；episode.key_ver 指向当前产物使用的版本
+	KeyVer int32
+	// KEK 包装后的密钥密文：kid ‖ 0x3A ‖ nonce ‖ AES-256-GCM 密文，AAD 为 media_key|wrapped_key|<episode_id>|<key_ver>
 	WrappedKey []byte
-	CreatedAt  pgtype.Timestamptz
+	// 生成时间
+	CreatedAt pgtype.Timestamptz
 }
 
+// 媒体对象（docs/12 第 7 节）：存储中的一份产物。分集删除后记录保留（episode_id 置空），由清理任务删除物理文件
 type MediaObject struct {
-	ID         int64
-	Kind       string
-	Key        string
-	SizeBytes  int64
-	Sha256     string
-	EpisodeID  pgtype.Int8
-	CreatedAt  pgtype.Timestamptz
+	// 媒体对象 ID
+	ID int64
+	// 类型：hls_dir 一集 HLS 产物的目录（主清单、各档清单、s/ 下的切片）/ file 单个文件
+	Kind string
+	// 对象键，全局唯一；hls_dir 时为产物目录
+	Key string
+	// 产物总字节数
+	SizeBytes int64
+	// hls_dir 为主清单内容的 SHA-256；file 为文件内容的哈希
+	Sha256 string
+	// 关联分集；分集删除时置空（ON DELETE SET NULL）
+	EpisodeID pgtype.Int8
+	// 创建时间
+	CreatedAt pgtype.Timestamptz
+	// 首次被发现不再被引用的时间；保留期（30 天）从它开始算，到期后连物理文件一起清理。用 created_at 算会让老产物一发现就被删
 	OrphanedAt pgtype.Timestamptz
 }
 
+// 媒体副本（docs/12 第 5 节）：一个 media_object 在哪些存储源上有副本。选源只考虑 status=ready 的存储源
 type MediaReplica struct {
-	ObjectID     int64
-	ProviderID   int64
-	Status       string
-	Error        string
+	// 媒体对象；对象删除时级联删除
+	ObjectID int64
+	// 存储源。不带 ON DELETE：有副本的存储源删不掉，由外键报错兜底
+	ProviderID int64
+	// 复制状态：pending 待复制 / ready 已就绪 / failed 失败
+	Status string
+	// 失败原因（给运营看，不含凭据）；成功后清空
+	Error string
+	// 复制完成时间
 	ReplicatedAt pgtype.Timestamptz
-	CreatedAt    pgtype.Timestamptz
-	UpdatedAt    pgtype.Timestamptz
-}
-
-type Menu struct {
-	ID         int64
-	Position   string
-	Label      string
-	LinkType   string
-	LinkValue  string
-	GroupTitle string
-	Icon       string
-	TabbarIcon string
-	Badge      string
-	VisibleTo  string
-	Device     string
-	NewTab     bool
-	Status     string
-	Sort       int32
-	CreatedAt  pgtype.Timestamptz
-	UpdatedAt  pgtype.Timestamptz
-}
-
-type Notification struct {
-	ID        int64
-	UserID    int64
-	Type      string
-	Payload   []byte
-	IsRead    bool
+	// 创建时间
 	CreatedAt pgtype.Timestamptz
-}
-
-type Page struct {
-	ID         int64
-	Title      string
-	Slug       string
-	Body       string
-	BodyFormat string
-	Status     string
-	SeoTitle   string
-	SeoDesc    string
-	IsFooter   bool
-	CreatedAt  pgtype.Timestamptz
-	UpdatedAt  pgtype.Timestamptz
-}
-
-type PayNotifyLog struct {
-	ID             int64
-	Channel        string
-	OrderNo        string
-	ChannelTradeNo string
-	Verified       bool
-	Amount         pgtype.Int8
-	RawDigest      []byte
-	RawEnc         []byte
-	ReceivedAt     pgtype.Timestamptz
-	HandledResult  string
-}
-
-type PayOrder struct {
-	ID              int64
-	OrderNo         string
-	UserID          int64
-	ProductType     string
-	ProductID       int64
-	ProductSnapshot []byte
-	CouponID        pgtype.Int8
-	DiscountFen     int64
-	Channel         string
-	Client          string
-	Currency        string
-	Amount          int64
-	Status          string
-	ChannelTradeNo  pgtype.Text
-	PaidAt          pgtype.Timestamptz
-	ExpireAt        pgtype.Timestamptz
-	Late            bool
-	RefundAmount    int64
-	IdempotencyKey  string
-	CreatedAt       pgtype.Timestamptz
-	UpdatedAt       pgtype.Timestamptz
-}
-
-type PayReconcileDaily struct {
-	Day        pgtype.Date
-	Channel    string
-	OrdersPaid int64
-	AmountPaid int64
-	BillCount  int64
-	BillAmount int64
-	Diff       []byte
-	Status     string
-}
-
-type PaymentChannel struct {
-	Channel       string
-	Enabled       bool
-	Clients       []string
-	RegionsAllow  []string
-	RegionsDeny   []string
-	Config        []byte
-	CredentialEnc []byte
-	UpdatedAt     pgtype.Timestamptz
-}
-
-type RankOverride struct {
-	Board     string
-	DramaID   int64
-	Pinned    bool
-	Blocked   bool
-	Boost     int64
+	// 最近修改时间
 	UpdatedAt pgtype.Timestamptz
 }
 
+// 前台菜单（docs/02 第 3.2 节）。随 GET /api/v1/site-config 的 menus 段下发：只下发启用且链接目标当前可见的项；手机底栏最多 5 项。与后台菜单 admin_menu 是两张不同的表
+type Menu struct {
+	// 菜单项 ID
+	ID int64
+	// 位置：top 顶部导航 / mobile_tabbar 手机底栏 / mobile_drawer 手机侧边抽屉 / footer 页脚
+	Position string
+	// 菜单文案，1–20 字
+	Label string
+	// 链接类型：internal 站内页白名单 / page 静态页 / channel 频道 / topic 专题 / tag 标签 / external 外部地址
+	LinkType string
+	// 链接目标：internal 为站内页标识（home/shua/explore/rank/topic/search/me/way_home）；page/channel/topic/tag 为对应记录的 slug；external 为 http(s) 完整地址
+	LinkValue string
+	// 页脚分组标题，只有 footer 位置使用
+	GroupTitle string
+	// lucide 图标名
+	Icon string
+	// 手机底栏图标，只有 mobile_tabbar 位置使用
+	TabbarIcon string
+	// 角标文案，如 NEW
+	Badge string
+	// 可见人群：all 全部 / auth 已登录 / guest 未登录。原样下发由前台判断（站点配置是共享缓存，不能按身份裁剪）
+	VisibleTo string
+	// 投放设备：all 全部 / mobile 手机 / desktop 电脑，原样下发由前台判断
+	Device string
+	// 是否在新标签页打开
+	NewTab bool
+	// 状态：active 启用 / inactive 停用
+	Status string
+	// 同一位置内的顺序，由后台拖拽调整
+	Sort int32
+	// 创建时间
+	CreatedAt pgtype.Timestamptz
+	// 最近修改时间
+	UpdatedAt pgtype.Timestamptz
+}
+
+// 全站日汇总（docs/02 第 6.3 节）：按北京时间日界，凌晨 3 点定稿。看板只读这张表，不扫 event_raw
+type MetricDaily struct {
+	// 统计日（北京时间）
+	Day pgtype.Date
+	// 去重设备数
+	Uv int64
+	// 播放尝试次数
+	PlayAttempts int64
+	// 播放成功开始次数
+	PlayStarts int64
+	// 播放失败次数
+	PlayErrors int64
+	// 有效观看秒数之和
+	WatchSeconds int64
+	// 注册成功人数
+	Registrations int64
+	// 注册墙曝光次数
+	RegWallViews int64
+	// 广告曝光次数
+	AdImpressions int64
+	// 广告点击次数
+	AdClicks int64
+	// 预留扩展指标：前台埋点 SDK 接入后的 QoS、留存等先放这里
+	Extra []byte
+	// 定稿时间
+	FinalizedAt pgtype.Timestamptz
+}
+
+// 按剧的日汇总（docs/02 第 6.3 节），供剧集分析列表
+type MetricDramaDaily struct {
+	// 统计日（北京时间）
+	Day pgtype.Date
+	// 剧集 ID（不建外键，剧删除后历史数据保留）
+	DramaID int64
+	// 去重观看人数
+	Viewers int64
+	// 播放开始次数
+	PlayStarts int64
+	// 有效观看秒数之和
+	WatchSeconds int64
+	// 预留扩展指标
+	Extra []byte
+}
+
+// 按分集的日汇总（docs/02 第 6.3 节），供单剧的集间留存曲线
+type MetricEpisodeDaily struct {
+	// 统计日（北京时间）
+	Day pgtype.Date
+	// 分集 ID（不建外键，分集删除后历史数据保留）
+	EpisodeID int64
+	// 所属剧 ID，便于按剧聚合
+	DramaID int64
+	// 去重观看人数
+	Viewers int64
+	// 播放开始次数
+	PlayStarts int64
+	// 有效观看秒数之和
+	WatchSeconds int64
+	// 预留扩展指标
+	Extra []byte
+}
+
+// 小时预聚合（docs/02 第 6.3.1 节）：按 UTC 小时，供看板实时卡片，不扫原始表
+type MetricHourly struct {
+	// 统计小时（UTC 整点）
+	Hour pgtype.Timestamptz
+	// 该小时去重设备数
+	Uv int64
+	// 该小时播放开始次数
+	PlayStarts int64
+	// 该小时有效观看秒数之和
+	WatchSeconds int64
+}
+
+// 站内通知（docs/02 第 5.9 节）
+type Notification struct {
+	// 通知 ID
+	ID int64
+	// 接收用户；用户删除时级联删除
+	UserID int64
+	// 类型：reply 评论被回复 / like 被点赞 / update 追更
+	Type string
+	// 跳转所需的上下文（评论 / 剧 / 集等标识与摘要）
+	Payload []byte
+	// 是否已读；未读数走部分索引
+	IsRead bool
+	// 产生时间；列表按它倒序
+	CreatedAt pgtype.Timestamptz
+}
+
+// 静态页（docs/02 第 3.3 节）：条款、隐私、FAQ 等，前台 /p/:slug。删除或改回草稿后，指向它的前台菜单项自动隐藏
+type Page struct {
+	// 静态页 ID
+	ID int64
+	// 页面标题，1–100 字
+	Title string
+	// 网址别名，全站唯一（前台 /p/:slug）
+	Slug string
+	// 正文：按白名单清洗后的 HTML（两种格式都清洗，清洗后为空则拒绝保存）
+	Body string
+	// 编辑方式：rich 富文本编辑器产出 / html 直接写 HTML。入库都是清洗后的结果
+	BodyFormat string
+	// 状态：draft 草稿（不对前台下发）/ published 已发布
+	Status string
+	// SEO 标题
+	SeoTitle string
+	// SEO 描述
+	SeoDesc string
+	// 是否页脚页：已发布且为真时随站点配置的 footer_pages 段下发给前台页脚
+	IsFooter bool
+	// 创建时间
+	CreatedAt pgtype.Timestamptz
+	// 最近修改时间
+	UpdatedAt pgtype.Timestamptz
+}
+
+// 支付回调与链上事件留痕（docs/02 第 5.10 节）：供对账与排障，保留 180 天。原文只存摘要与密文，禁止写入日志
+type PayNotifyLog struct {
+	// 记录 ID
+	ID int64
+	// 来源渠道
+	Channel string
+	// 回调中解析出的对外订单号；解析失败时为空串
+	OrderNo string
+	// 渠道流水号或交易哈希
+	ChannelTradeNo string
+	// 验签是否通过
+	Verified bool
+	// 回调声明的金额，口径同 pay_order.amount
+	Amount pgtype.Int8
+	// 回调原文的 SHA-256（固定 32 字节），用于去重与比对
+	RawDigest []byte
+	// 回调原文的信封密文；只在排障时由授权流程解密
+	RawEnc []byte
+	// 接收时间
+	ReceivedAt pgtype.Timestamptz
+	// 处理结果说明，不超过 200 字
+	HandledResult string
+}
+
+// 支付订单（docs/02 第 5.10 节）。状态机 pending → paid（验签通过且金额一致）/ pending → closed（超时或取消）/ paid → refunded。金额与商品快照在创建时固定，后续改价不影响已有订单
+type PayOrder struct {
+	// 订单 ID（内部）
+	ID int64
+	// 对外订单号，随机不可推测，20–64 位，唯一
+	OrderNo string
+	// 下单用户；有订单的用户不能物理删除（ON DELETE RESTRICT）
+	UserID int64
+	// 商品类型：vip_plan 会员套餐 / coin_package 金币包
+	ProductType string
+	// 商品主键（按 product_type 指向 vip_plan 或 coin_package）
+	ProductID int64
+	// 下单时的商品快照（天数 / 金币数与价格），后续改价不影响本单
+	ProductSnapshot []byte
+	// 使用的优惠券；无则为空
+	CouponID pgtype.Int8
+	// 优惠金额（人民币分）
+	DiscountFen int64
+	// 支付渠道（payment_channel）
+	Channel string
+	// 下单客户端：web_pc / web_mobile / app_official / app_store
+	Client string
+	// 币种：CNY 人民币 / USDT
+	Currency string
+	// 应付金额，按 currency 取最小单位（CNY 为分，USDT 为 10⁻⁶）
+	Amount int64
+	// 状态：pending 待支付 / paid 已支付 / closed 已关闭 / refunded 已退款
+	Status string
+	// 渠道流水号或链上交易哈希；与 channel 组成唯一索引，防重复到账
+	ChannelTradeNo pgtype.Text
+	// 支付成功时间
+	PaidAt pgtype.Timestamptz
+	// 订单失效时间，默认下单后 30 分钟
+	ExpireAt pgtype.Timestamptz
+	// 关闭后才到账：照常发放会员并标记为真，进入人工复核
+	Late bool
+	// 已退金额，口径同 amount
+	RefundAmount int64
+	// 下单幂等键；与 user_id 组成唯一约束，防重复下单
+	IdempotencyKey string
+	// 下单时间
+	CreatedAt pgtype.Timestamptz
+	// 最近更新时间
+	UpdatedAt pgtype.Timestamptz
+}
+
+// 每日对账结果（docs/02 第 5.10 节）：本地已支付订单与渠道账单的比对
+type PayReconcileDaily struct {
+	// 对账日期
+	Day pgtype.Date
+	// 支付渠道（payment_channel）
+	Channel string
+	// 本地已支付订单数
+	OrdersPaid int64
+	// 本地已支付金额
+	AmountPaid int64
+	// 渠道账单笔数
+	BillCount int64
+	// 渠道账单金额
+	BillAmount int64
+	// 差异明细（本地多、渠道多、金额不一致等）
+	Diff []byte
+	// 对账状态：ok 一致 / diff 有差异 / manual_ok 人工确认无误
+	Status string
+}
+
+// 支付渠道配置（docs/02 第 5.10 节）。凭据只以信封密文保存、后台只写不读；初始全部关闭，修改凭据需超管二次验证
+type PaymentChannel struct {
+	// 渠道：alipay 支付宝 / wechat 微信 / usdt 链上转账 / iap_apple 苹果内购 / iap_google 谷歌内购
+	Channel string
+	// 是否启用；未配置真实价格与凭据时不能发起支付
+	Enabled bool
+	// 允许的客户端：web_pc / web_mobile / app_official / app_store
+	Clients []string
+	// 允许地区（ISO 国家码）；空数组表示不限制
+	RegionsAllow []string
+	// 禁止地区（ISO 国家码）
+	RegionsDeny []string
+	// 非机密配置：商户号、AppID、网关地址等
+	Config []byte
+	// 凭据密文（私钥、APIv3 密钥、证书等信封加密）；需独立 KEK，不复用存储凭据密钥
+	CredentialEnc []byte
+	// 最近修改时间
+	UpdatedAt pgtype.Timestamptz
+}
+
+// 排行人工干预（docs/02 第 3.8 节）。按榜整体保存，每榜最多 100 行；要重新排名才生效。线上榜单不在库里，由 worker 每 5 分钟算一次写入 Valkey 有序集合
+type RankOverride struct {
+	// 榜单：drama_week 周榜 / drama_month 月榜
+	Board string
+	// 目标剧；剧物理删除时一起删除
+	DramaID int64
+	// 置顶：排在最前，多部置顶之间按分数。与 blocked 互斥
+	Pinned bool
+	// 不让上榜，只影响该榜。与 pinned 互斥
+	Blocked bool
+	// 加分（-1000000000 到 1000000000），负数为减分，直接加到分数上
+	Boost int64
+	// 最近调整时间
+	UpdatedAt pgtype.Timestamptz
+}
+
+// 举报（docs/02 第 5.6 节）。24 小时内同设备对同对象只计一次由 Valkey 去重，不建唯一约束
 type Report struct {
-	ID              int64
-	TargetType      string
-	TargetID        int64
-	ReporterID      pgtype.Int8
+	// 举报 ID
+	ID int64
+	// 举报对象类型：comment 评论 / danmaku 弹幕 / drama 剧 / comment_image 评论配图
+	TargetType string
+	// 举报对象主键，按 target_type 多态（不建外键）
+	TargetID int64
+	// 注册用户举报人；账号删除时置空
+	ReporterID pgtype.Int8
+	// 游客举报人；设备删除时置空
 	ReporterGuestID pgtype.UUID
-	Reason          string
-	Detail          string
-	Status          string
-	HandleNote      string
-	CreatedAt       pgtype.Timestamptz
+	// 原因：attack 人身攻击 / vulgar 低俗 / illegal 违法 / minor 涉未成年 / ad 广告 / spoiler 剧透 / other 其他
+	Reason string
+	// 举报补充说明，不超过 500 字
+	Detail string
+	// 处理状态：pending 待处理 / resolved 已处理 / rejected 已驳回
+	Status string
+	// 运营处理备注
+	HandleNote string
+	// 举报时间
+	CreatedAt pgtype.Timestamptz
 }
 
+// 资源体检结果（docs/02 第 4.3 节）：批量探测视频产物与封面是否可达。一个资源只留最后一次结果（UPSERT）
 type ResourceCheck struct {
-	ID         int64
-	DramaID    int64
-	EpisodeID  pgtype.Int8
-	FileType   string
-	Field      string
-	Url        string
-	LineID     pgtype.Int8
-	Result     string
+	// 记录 ID
+	ID int64
+	// 所属剧；剧删除时级联删除
+	DramaID int64
+	// 所属分集；剧封面的记录没有分集（为空）
+	EpisodeID pgtype.Int8
+	// 资源大类：video 视频 / cover 图片
+	FileType string
+	// 具体字段：cover_portrait 竖封面 / cover_landscape 横封面 / episode_cover 分集封面 / episode_poster 首帧图 / video 视频。只有 file_type 分不出该改哪个字段
+	Field string
+	// 探测地址，不含查询串：HMAC 令牌与 S3 预签名带签名材料，落库等于把密钥派生值留在表里。探测时按线路现算签名
+	Url string
+	// 本次探测使用的存储线路；同一对象键经不同线路的可达性可能不同，记下来结果才解释得通
+	LineID pgtype.Int8
+	// 结果：ok 正常 / not_found 404 / forbidden 403 / server_error 5xx / unopenable 响应异常打不开 / unreachable 连不上
+	Result string
+	// HTTP 状态码；连不上时为 0
 	StatusCode int32
-	ElapsedMs  int32
-	Message    string
-	CheckedAt  pgtype.Timestamptz
+	// 耗时（毫秒），用于区分超时与直接拒绝
+	ElapsedMs int32
+	// 补充说明（DNS 失败、超时、被出站策略拦截等）
+	Message string
+	// 本次探测时间
+	CheckedAt pgtype.Timestamptz
 }
 
+// 资源预热任务（docs/02 第 4.4 节）：worker 预先拉取清单与前 N 个切片让 CDN 边缘缓存住。同一时间仅一轮（部分唯一索引）
 type ResourceWarmJob struct {
-	ID                 int64
-	DramaID            pgtype.Int8
-	Mode               string
+	// 任务 ID
+	ID int64
+	// 预热范围；NULL 表示全部剧。剧删除后保留记录，置空即可
+	DramaID pgtype.Int8
+	// 模式：playlist_only 只热清单 / with_segments 清单加前若干切片
+	Mode string
+	// 每个清晰度拉前几个切片（1–20），with_segments 时有效
 	SegmentsPerQuality int32
-	Concurrency        int32
+	// 同时热几集（1–16）
+	Concurrency int32
+	// 是否包含未上架的剧
 	IncludeUnpublished bool
-	Status             string
-	EpisodesTotal      int32
-	EpisodesDone       int32
-	Warmed             int64
-	Failed             int64
-	Fetched            int64
-	TrafficBytes       int64
-	Current            string
-	StopRequested      bool
-	Error              string
-	AdminID            int64
-	StartedAt          pgtype.Timestamptz
-	HeartbeatAt        pgtype.Timestamptz
-	FinishedAt         pgtype.Timestamptz
+	// 状态：running 进行中 / done 完成 / stopped 运营停止 / interrupted 心跳超时判定中断
+	Status string
+	// 计划预热的分集总数（进度条分母）
+	EpisodesTotal int32
+	// 已处理完的分集数
+	EpisodesDone int32
+	// 热好的资源数（清单与切片各算一个）
+	Warmed int64
+	// 拿不到的资源数
+	Failed int64
+	// 实际发出的请求数
+	Fetched int64
+	// 累计拉取流量（字节）
+	TrafficBytes int64
+	// 当前在热什么，给运营看进展（如「第 12 集 · 720p」）
+	Current string
+	// 停止信号：运营点「停止」时置真。用列传信号比 Valkey 可靠（worker 重启后信号还在）
+	StopRequested bool
+	// 中断原因
+	Error string
+	// 发起人。不加外键：任务记录要比管理员账号活得久
+	AdminID int64
+	// 开始时间
+	StartedAt pgtype.Timestamptz
+	// worker 心跳时间；超时即判定为 interrupted（worker 崩了之后没人改 status）
+	HeartbeatAt pgtype.Timestamptz
+	// 结束时刻。存时刻而不是时长，运行中也能算出已跑多久
+	FinishedAt pgtype.Timestamptz
 }
 
+// 站点配置：单行多列 jsonb，对应后台各配置段；version 每次前台可见的变更 +1，供 ETag 判断（docs/02 第 3.6 节）
 type SiteConfig struct {
-	ID            int16
-	Version       int64
-	Site          []byte
-	Theme         []byte
-	Layout        []byte
-	Seo           []byte
-	Analytics     []byte
-	AgeGate       []byte
-	Features      []byte
-	Addresses     []byte
-	UpdatedAt     pgtype.Timestamptz
-	Ranking       []byte
+	// 固定为 1：CHECK 约束保证全表只有一行
+	ID int16
+	// 站点配置版本号，前台与 APP 按它判断配置是否变化；只有下发给前台的段变更时 +1
+	Version int64
+	// 白标基础段：site_name / slogan / copyright / support_url / logo_light / favicon
+	Site []byte
+	// 主题段：preset / color_scheme / allow_scheme_toggle / colors / radius / cover_ratio / font
+	Theme []byte
+	// 布局段：header_style / card_style / play_mode / mobile_tabbar
+	Layout []byte
+	// SEO 段：按页面的 title_templates / desc_templates，以及 og_image / robots / sitemap / structured_data / verifications
+	Seo []byte
+	// 统计代码段：head_snippet / body_snippet。只有后台接口读取，不对前台下发
+	Analytics []byte
+	// 年龄门段：enabled / title / desc / deny_text / confirm_text / deny_url / remember_days
+	AgeGate []byte
+	// 功能开关段：comments / danmaku / register / guest_interaction / ranks / share_poster / pwa / search_suggest
+	Features []byte
+	// 地址段：notice / socials / telegram / latest_url / backup_urls / publish_page / permanent_url
+	Addresses []byte
+	// 最近一次保存时间
+	UpdatedAt pgtype.Timestamptz
+	// 榜单计分系数：play / follow / like / finish（各 0–1000，默认 1/3/2/2）。只给后台与重新排名任务读，不下发前台，修改不改 version
+	Ranking []byte
+	// 评论策略：pre_moderation=true 时所有评论先进待审。后端专用段，不下发前台、不改 version
 	CommentPolicy []byte
 }
 
+// 存储线路（docs/12 第 3 节）：一个存储源可挂多条线路（CDN 域名 / 直连 / 自定义域名），按地区规则决定给哪些用户
 type StorageLine struct {
-	ID           int64
-	ProviderID   int64
-	Kind         string
-	Name         string
-	BaseUrl      string
-	AccessMode   string
-	SignType     string
-	SignKeyRef   string
-	TokenTtl     int32
-	Priority     int32
-	Weight       int32
-	RegionScope  string
+	// 线路 ID
+	ID int64
+	// 所属存储源；有线路的存储源删不掉（ON DELETE RESTRICT）
+	ProviderID int64
+	// 承载内容：video 切片与清单 / image 封面等图片
+	Kind string
+	// 线路名称，不超过 64 字；空串时前端显示「线路 N」
+	Name string
+	// 访问入口地址；presign 直连存储时留空，由存储源生成
+	BaseUrl string
+	// 访问方式：presign 直接给存储预签名 / cdn 经 CDN 域名 / public 公开读（仅封面等）
+	AccessMode string
+	// 签名方式：s3_presign / hmac_token 目录前缀签名 / cdn_vendor CDN 厂商鉴权 / none 不签名
+	SignType string
+	// 签名密钥引用（密钥本身在密钥管理中，不入库）
+	SignKeyRef string
+	// 签名有效期（秒），60–604800
+	TokenTtl int32
+	// 优先级，数字越大越靠前
+	Priority int32
+	// 同优先级内的流量权重（1–100）
+	Weight int32
+	// 适用范围：rules 按地区规则命中 / global 兜底（所有地区可用）
+	RegionScope string
+	// 历史兼容的产物形态：standard 标准 / text_to_image 旧混淆封装。新内容一律 standard
 	VideoProcess string
-	ProbePath    string
-	Status       string
-	Note         string
-	CreatedAt    pgtype.Timestamptz
-	UpdatedAt    pgtype.Timestamptz
+	// 健康探测文件路径，默认 /_probe/256k.bin
+	ProbePath string
+	// 状态：active 正常 / watch 观察中（仍下发但排在后面）/ disabled 停用
+	Status string
+	// 运维备注，不超过 200 字
+	Note string
+	// 创建时间
+	CreatedAt pgtype.Timestamptz
+	// 最近修改时间
+	UpdatedAt pgtype.Timestamptz
 }
 
+// 线路地区规则（docs/12 第 3.2 节）：一条线路可有多条规则，命中任意一条即视为「本地区线路」
 type StorageLineRule struct {
-	ID       int64
-	LineID   int64
-	Country  string
+	// 规则 ID
+	ID int64
+	// 所属线路；线路删除时级联删除
+	LineID int64
+	// 国家地区：ISO 3166-1 alpha-2 代码，* 表示全部
+	Country string
+	// 省份，* 表示全部；仅中国大陆有意义
 	Province string
-	Isp      string
-	Asn      string
-	Effect   string
-	Boost    int32
+	// 运营商（电信 / 联通 / 移动），* 表示全部
+	Isp string
+	// 自治系统号，可选，用于精确匹配
+	Asn string
+	// 作用：include 命中生效 / exclude 把某运营商排除出这条线路
+	Effect string
+	// 命中后的额外加分（0–100），影响选线排序
+	Boost int32
 }
 
+// 存储源（docs/12 第 2 节）：一个存储源 = 一个桶 + 一组凭据。凭据只写不读，读写与只读两套分开存
 type StorageProvider struct {
-	ID                int64
-	Name              string
-	Type              string
-	Subtype           string
-	Purpose           string
-	Role              string
-	Endpoint          string
-	Region            string
-	Bucket            string
-	AccountID         string
-	PathStyle         bool
-	PathPrefix        string
-	CredentialEnc     []byte
+	// 存储源 ID
+	ID int64
+	// 存储源名称，1–64 字
+	Name string
+	// 类型：s3 AWS S3 或 S3 兼容云存储 / r2 Cloudflare R2 / custom 自建 S3 兼容或只读 HTTP 源
+	Type string
+	// 仅 custom 使用：s3_compatible 走 S3 协议 / http_origin 只读 HTTP 源（base_url 存入 endpoint）。其它类型留空
+	Subtype string
+	// 用途：video 切片与清单 / image 封面等图片 / both 两者都放
+	Purpose string
+	// 角色：primary 新内容写入 / mirror 异步复制 / readonly 只读历史资源
+	Role string
+	// 访问端点：s3 可选（S3 兼容服务填写）/ r2 由 account_id 自动生成 / s3_compatible 必填 / http_origin 存 base_url
+	Endpoint string
+	// 区域：s3 必填；r2 固定 auto（业务层补齐）
+	Region string
+	// 桶名：s3 / r2 / s3_compatible 必填；http_origin 可空
+	Bucket string
+	// Cloudflare 账号 ID，r2 必填
+	AccountID string
+	// 是否使用 path-style 寻址（自建 MinIO / SeaweedFS 等通常需要）
+	PathStyle bool
+	// 桶内前缀（如 media/），便于多环境共用一个桶
+	PathPrefix string
+	// 读写凭据密文（信封加密后的 {access_key_id, secret_access_key}），用于上传、复制、删除；NULL 表示未配置
+	CredentialEnc []byte
+	// 只读凭据密文，用于生成预签名地址；NULL 表示未配置
 	ReadCredentialEnc []byte
-	CredTail          string
-	ReadCredTail      string
-	MaxPresignTtl     int32
-	Status            string
-	CreatedAt         pgtype.Timestamptz
-	UpdatedAt         pgtype.Timestamptz
+	// 读写凭据 secret 的末 4 位，仅用于后台显示「已配置 ****abcd」（非敏感）
+	CredTail string
+	// 只读凭据 secret 的末 4 位，仅用于后台显示
+	ReadCredTail string
+	// 预签名最长有效期（秒），默认 600，上限 604800（S3/R2 协议上限 7 天）
+	MaxPresignTtl int32
+	// 状态：active 正常 / draining 只读待迁出 / disabled 停用
+	Status string
+	// 创建时间
+	CreatedAt pgtype.Timestamptz
+	// 最近修改时间
+	UpdatedAt pgtype.Timestamptz
 }
 
+// 存储全局设置（docs/12 第 7 节）：单行配置，始终存在，读取时无需处理「未初始化」
 type StorageSetting struct {
-	ID                     int32
-	CandidateCount         int32
-	DefaultTtl             int32
-	SmartRouting           bool
+	// 固定为 1：CHECK 约束保证全表只有一行
+	ID int32
+	// 下发给客户端的候选线路数量（1–5，默认 3）
+	CandidateCount int32
+	// 默认签名有效期（秒），60–604800，默认 600
+	DefaultTtl int32
+	// 是否启用智能选线（按 IP 地区与健康分排序）
+	SmartRouting bool
+	// 视频主存储：新视频写入此存储源
 	PrimaryVideoProviderID pgtype.Int8
+	// 图片主存储：新图片写入此存储源
 	PrimaryImageProviderID pgtype.Int8
-	ReplicateOnUpload      bool
-	UpdatedAt              pgtype.Timestamptz
+	// 上传完成后是否自动向 mirror 存储源复制
+	ReplicateOnUpload bool
+	// 最近修改时间
+	UpdatedAt pgtype.Timestamptz
 }
 
+// 标签（docs/02 第 2.3 节）。合并是软合并：被并入的标签记 merged_into_id，前台按目标标签展示
 type Tag struct {
-	ID           int64
-	Name         string
-	Slug         string
-	IsHidden     bool
-	Status       string
+	// 标签 ID
+	ID int64
+	// 标签名
+	Name string
+	// 网址别名，全站唯一（标签页 /t/:slug）
+	Slug string
+	// 敏感标签：过年龄门后才显示，且不被搜索引擎收录
+	IsHidden bool
+	// 状态：active 正常 / hidden 不在前台显示
+	Status string
+	// 软合并目标标签；非空表示本标签已被并入该标签
 	MergedIntoID pgtype.Int8
-	CreatedAt    pgtype.Timestamptz
+	// 创建时间
+	CreatedAt pgtype.Timestamptz
 }
 
+// 筛选维度（docs/02 第 2.4 节）：探索页的一组筛选条，如题材、地区、年份
 type Taxonomy struct {
-	ID            int64
-	Name          string
-	Slug          string
-	MultiSelect   bool
+	// 维度 ID
+	ID int64
+	// 维度名称
+	Name string
+	// 维度别名，全站唯一；探索页按「维度 slug + 取值 slug」筛选
+	Slug string
+	// 是否可多选：多选维度追加取值，单选维度由业务层替换
+	MultiSelect bool
+	// 是否在探索页显示筛选条
 	ShowInExplore bool
-	Status        string
-	Sort          int32
+	// 状态：active 启用 / inactive 停用
+	Status string
+	// 筛选条排序
+	Sort int32
 }
 
+// 维度取值（docs/02 第 2.4 节）。删除维度时取值级联删除 —— 取值被删会同时清空全站剧集的该维度归属
 type TaxonomyTerm struct {
-	ID         int64
+	// 取值 ID
+	ID int64
+	// 所属维度；维度删除时级联删除
 	TaxonomyID int64
-	Name       string
-	Slug       string
-	Status     string
-	IsChannel  bool
-	Code       string
-	Sort       int32
+	// 取值名称
+	Name string
+	// 取值别名，在维度内唯一；设为频道的取值 slug 全站唯一（频道页 /c/:slug）
+	Slug string
+	// 状态：active 启用 / inactive 停用（前台筛选条不显示、频道页 404）
+	Status string
+	// 是否有独立频道页；为真时 slug 需全站唯一
+	IsChannel bool
+	// 取值编号，供区块与专题的自动规则引用；填写时全站唯一
+	Code string
+	// 取值排序
+	Sort int32
 }
 
+// 专题（docs/02 第 2.5 节）：手选或按规则自动选出的一组剧
 type Topic struct {
-	ID          int64
-	Title       string
-	Slug        string
-	Summary     string
-	Status      string
-	SourceType  string
-	RuleJson    []byte
-	FaqJson     []byte
+	// 专题 ID
+	ID int64
+	// 专题标题
+	Title string
+	// 网址别名，全站唯一（专题页 /topic/:slug）
+	Slug string
+	// 专题简介
+	Summary string
+	// 状态：draft 草稿 / published 已发布
+	Status string
+	// 选剧方式：manual 手选（topic_drama）/ auto 按 rule_json 规则
+	SourceType string
+	// 自动规则：{term_codes[], tag_id, sort(latest|hot|recommend), window(all|7d|14d|30d|90d), limit(1–60)}，同时满足全部取值与标签；{} 按默认规则解释
+	RuleJson []byte
+	// 问答对 [{question, answer}]，纯文本，用于专题页 SEO
+	FaqJson []byte
+	// 是否列在专题列表页
 	ListInIndex bool
-	CreatedAt   pgtype.Timestamptz
+	// 创建时间
+	CreatedAt pgtype.Timestamptz
 }
 
+// 专题手选剧：保存时按专题整份替换
 type TopicDrama struct {
+	// 专题（topic）
 	TopicID int64
+	// 剧集（drama）
 	DramaID int64
-	Sort    int32
+	// 专题内的展示顺序
+	Sort int32
 }
 
+// 转封装任务（docs/02 第 4.1a 节）。一次提交一行，自动重试沿用同一行；部分唯一索引保证同一集同时最多一个 queued / running 任务
 type TranscodeJob struct {
-	ID             pgtype.UUID
-	EpisodeID      int64
-	SourceKey      string
-	Force          bool
-	Status         string
-	Progress       int32
-	Attempts       int32
-	Error          string
-	SourceHash     string
+	// 任务编号（UUIDv7，对外暴露），按时间有序
+	ID pgtype.UUID
+	// 目标分集；分集删除时级联删除
+	EpisodeID int64
+	// 源文件在 MEDIA_SOURCE_BUCKET 中的路径
+	SourceKey string
+	// 是否强制重转：为真时即使 source_hash 相同也重新转码
+	Force bool
+	// 状态：queued 排队或等待重试 / running 进行中 / succeeded 成功 / skipped 源文件与当前产物相同未重转 / failed 失败
+	Status string
+	// 进度百分比（0–100）
+	Progress int32
+	// 已尝试次数
+	Attempts int32
+	// 最近一次失败原因
+	Error string
+	// 源文件 SHA-256，与 episode.source_hash 比较以判定 skipped
+	SourceHash string
+	// 产出的媒体对象（media_object）；对象删除时置空
 	OutputObjectID pgtype.Int8
-	KeyVer         int32
-	Renditions     []byte
-	Poster         string
-	DurationSec    int32
-	CreatedAt      pgtype.Timestamptz
-	StartedAt      pgtype.Timestamptz
-	FinishedAt     pgtype.Timestamptz
-	UpdatedAt      pgtype.Timestamptz
+	// 本次产物使用的内容密钥版本
+	KeyVer int32
+	// 本次产物的码率阶梯，成功后写入 episode.renditions
+	Renditions []byte
+	// 本次生成的首帧图相对 key
+	Poster string
+	// 探测出的时长（秒）
+	DurationSec int32
+	// 入队时间
+	CreatedAt pgtype.Timestamptz
+	// 开始执行时间
+	StartedAt pgtype.Timestamptz
+	// 结束时间（成功、跳过或失败）
+	FinishedAt pgtype.Timestamptz
+	// 最近更新时间（含进度刷新）
+	UpdatedAt pgtype.Timestamptz
 }
 
+// 注册用户（docs/02 第 5.1 节）。不提供找回密码（adr/0001），因此不存恢复码、邮箱、手机号；注销的用户名也不释放
 type User struct {
-	ID                int64
-	Username          string
-	Nickname          string
-	PasswordHash      string
-	Avatar            string
-	Bio               string
-	NicknameStatus    string
-	BioStatus         string
-	AvatarStatus      string
+	// 用户 ID
+	ID int64
+	// 登录名：统一存小写，3–32 位 [a-z0-9_]，大小写不敏感唯一
+	Username string
+	// 展示昵称，不超过 40 字
+	Nickname string
+	// 密码哈希（Argon2id PHC 串）
+	PasswordHash string
+	// 头像相对 key
+	Avatar string
+	// 个人简介，不超过 80 字
+	Bio string
+	// 昵称审核状态：ok 通过 / pending 待审 / rejected 驳回
+	NicknameStatus string
+	// 简介审核状态：ok 通过 / pending 待审 / rejected 驳回
+	BioStatus string
+	// 头像审核状态：ok 通过 / pending 待审 / rejected 驳回
+	AvatarStatus string
+	// 近 30 天的改名时间记录，用于限制改名频次（docs/13 第 2.5 节）
 	NicknameChangedAt []pgtype.Timestamptz
-	Locale            pgtype.Text
-	HistoryPaused     bool
-	Status            string
-	VerifiedAt        pgtype.Timestamptz
-	CreatedAt         pgtype.Timestamptz
-	DeletedAt         pgtype.Timestamptz
+	// 界面语言偏好；为空表示跟随客户端
+	Locale pgtype.Text
+	// 是否暂停记录观看历史
+	HistoryPaused bool
+	// 账号状态：normal 正常 / muted 禁言 / banned 封禁
+	Status string
+	// 实名或手机号验证时间，按运营地开关启用
+	VerifiedAt pgtype.Timestamptz
+	// 注册时间
+	CreatedAt pgtype.Timestamptz
+	// 软删除时间：非空表示在回收站，其评论一并进回收站
+	DeletedAt pgtype.Timestamptz
 }
 
+// 刷新令牌轮换族（docs/02 第 5.1.1 节）。刷新时新建行并吊销旧行；旧令牌复用即判定泄露，吊销整族。服务端只存 refresh 的 SHA-256
 type UserSession struct {
-	ID            pgtype.UUID
-	FamilyID      pgtype.UUID
-	UserID        pgtype.Int8
+	// 会话 ID（UUIDv7）
+	ID pgtype.UUID
+	// 轮换族 ID：同一次登录的历次刷新共享，判定泄露时按它整族吊销
+	FamilyID pgtype.UUID
+	// 注册用户；与 guest_device_id 恰好二选一（CHECK 约束）
+	UserID pgtype.Int8
+	// 游客设备；与 user_id 恰好二选一（CHECK 约束）
 	GuestDeviceID pgtype.UUID
-	RefreshHash   []byte
-	UaDigest      string
-	IpPrefix      string
-	Platform      string
-	CreatedAt     pgtype.Timestamptz
-	LastSeenAt    pgtype.Timestamptz
-	ExpiresAt     pgtype.Timestamptz
-	RevokedAt     pgtype.Timestamptz
-	RevokeReason  string
+	// refresh 令牌的 SHA-256，唯一；明文不入库
+	RefreshHash []byte
+	// User-Agent 摘要，不存原始 UA
+	UaDigest string
+	// 来源 IP 网段，不存完整 IP
+	IpPrefix string
+	// 平台：web / ios / android
+	Platform string
+	// 创建时间
+	CreatedAt pgtype.Timestamptz
+	// 最近一次使用时间，「我的设备」列表展示
+	LastSeenAt pgtype.Timestamptz
+	// 过期时间；清理任务按它批量删除
+	ExpiresAt pgtype.Timestamptz
+	// 吊销时间；非空表示已失效
+	RevokedAt pgtype.Timestamptz
+	// 吊销原因（refresh_rotated / password_changed / family_compromised 等）
+	RevokeReason string
 }
 
+// 会员状态（docs/02 第 5.10 节）：一位用户一行。判定会员为 expire_at > now()；读路径走 Valkey 缓存，变更时失效
 type UserVip struct {
-	UserID      int64
-	ExpireAt    pgtype.Timestamptz
-	TotalDays   int64
+	// 用户；用户删除时级联删除
+	UserID int64
+	// 会员到期时间；续费按 max(expire_at, now()) 顺延
+	ExpireAt pgtype.Timestamptz
+	// 累计获得的会员天数
+	TotalDays int64
+	// 首次付费时间；赠送开通时为空
 	FirstPaidAt pgtype.Timestamptz
-	UpdatedAt   pgtype.Timestamptz
+	// 最近变更时间
+	UpdatedAt pgtype.Timestamptz
 }
 
+// 会员流水（docs/02 第 5.10 节）：只追加，不修改。user_vip 的每次变动都要写一条；会员迁移写一对 migrate_out / migrate_in
 type VipLedger struct {
-	ID         int64
-	UserID     int64
-	OrderID    pgtype.Int8
+	// 流水 ID
+	ID int64
+	// 用户；用户删除时级联删除
+	UserID int64
+	// 关联订单（pay_order）；订单删除时置空，流水保留
+	OrderID pgtype.Int8
+	// 变动天数，可为负（退款、后台收回）；不允许为 0
 	ChangeDays int32
+	// 变动前的到期时间
 	FromExpire pgtype.Timestamptz
-	ToExpire   pgtype.Timestamptz
-	Reason     string
-	AdminID    pgtype.Int8
-	Note       string
-	CreatedAt  pgtype.Timestamptz
+	// 变动后的到期时间
+	ToExpire pgtype.Timestamptz
+	// 变动原因：purchase 购买 / refund 退款 / admin_grant 后台赠送 / admin_revoke 后台收回 / migrate_in 迁入 / migrate_out 迁出 / compensation 补偿 / reward 活动奖励 / mall 商城兑换
+	Reason string
+	// 操作管理员（后台赠送 / 收回时）；账号删除时置空
+	AdminID pgtype.Int8
+	// 备注，不超过 500 字
+	Note string
+	// 发生时间
+	CreatedAt pgtype.Timestamptz
 }
 
+// 会员套餐（docs/02 第 5.10 节）：五种卡，code 唯一，名称按 code 走多语言文案。种子数据均为 off 且金额为 0，等后台配置真实价格后才能上架
 type VipPlan struct {
-	ID             int64
-	Code           string
-	DurationDays   int32
-	PriceFen       int64
-	ListPriceFen   int64
+	// 套餐 ID
+	ID int64
+	// 套餐编码：day 日卡 / week 周卡 / month 月卡 / quarter 季卡 / year 年卡，唯一
+	Code string
+	// 会员时长（天），默认 1 / 7 / 30 / 90 / 365
+	DurationDays int32
+	// 售价（人民币分）
+	PriceFen int64
+	// 划线价（人民币分），用于展示折扣
+	ListPriceFen int64
+	// USDT 售价（10⁻⁶ USDT，与 TRC-20/ERC-20 合约的 6 位小数一致）
 	PriceMicroUsdt int64
-	BadgeKey       pgtype.Text
-	Recommended    bool
-	Channels       []string
-	Clients        []string
-	Sort           int32
-	Status         string
-	UpdatedAt      pgtype.Timestamptz
+	// 角标文案键（走多语言），可空
+	BadgeKey pgtype.Text
+	// 是否标为推荐
+	Recommended bool
+	// 允许的支付渠道：alipay / wechat / usdt / iap_apple / iap_google
+	Channels []string
+	// 允许的客户端：web_pc / web_mobile / app_official / app_store
+	Clients []string
+	// 展示顺序（0–9999）
+	Sort int32
+	// 状态：on 已上架 / off 已下架（不向用户显示或开放购买）
+	Status string
+	// 最近修改时间
+	UpdatedAt pgtype.Timestamptz
 }
 
+// 观看历史（docs/02 第 5.2 节）：续播断点，每人每剧一行，保留最近 500 部。只存注册用户，游客历史存本机、登录后经 /me/local-merge 并入。高频上报先写 Valkey、worker 每分钟批量 UPSERT
 type WatchHistory struct {
-	UserID        int64
-	DramaID       int64
-	EpisodeID     int64
+	// 用户；用户删除时级联删除
+	UserID int64
+	// 剧集；剧物理删除时级联删除
+	DramaID int64
+	// 最近看的分集 ID（不建外键，分集删除后仍保留断点）
+	EpisodeID int64
+	// 最近看的集号，用于「看到第 N 集」展示
 	EpisodeNumber int32
-	PositionSec   int32
-	DurationSec   int32
-	UpdatedAt     pgtype.Timestamptz
+	// 断点位置（秒）
+	PositionSec int32
+	// 该集总时长（秒），用于算进度条
+	DurationSec int32
+	// 最近上报时间；续播列表按它倒序
+	UpdatedAt pgtype.Timestamptz
 }

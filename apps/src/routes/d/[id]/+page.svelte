@@ -2,6 +2,7 @@
 	import { page } from '$app/state';
 	import { PUBLIC_SITE_URL } from '$app/env/public';
 	import { onMount } from 'svelte';
+	import AdSlot from '#lib/home/AdSlot.svelte';
 	import Badge from '#lib/drama/Badge.svelte';
 	import DramaActions from '#lib/drama/DramaActions.svelte';
 	import DramaGrid from '#lib/drama/DramaGrid.svelte';
@@ -203,6 +204,9 @@
 	</div>
 
 	<div class="page-x flex flex-col gap-10 md:gap-12">
+		<!-- 详情页横幅广告位（docs/04 C.5）：没有素材时整块不渲染，不占位 -->
+		<AdSlot slot="detail_banner" class="-mb-4 md:-mb-6" />
+
 		{#if drama.episodes.length > 0}
 			<section aria-labelledby="episodes-title">
 				<SectionHeader id="episodes-title" title={i18n.t('drama.episodes')} subtitle={episodesLabel(i18n, drama)} />

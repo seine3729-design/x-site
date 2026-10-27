@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import type { Control, FieldPath, FieldValues } from 'react-hook-form'
+import { DatePicker, type DatePickerMode } from '@/components/date-picker'
 import { SelectDropdown } from '@/components/select-dropdown'
 import { Input, Switch, Textarea } from '@/components/ui'
 import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form'
@@ -39,13 +40,11 @@ export function TextField<T extends FieldValues>({
   multiline,
   rows = 3,
   inputMode,
-  type,
 }: BaseProps<T> & {
   placeholder: string
   multiline?: boolean
   rows?: number
   inputMode?: 'numeric' | 'decimal' | 'text'
-  type?: 'text' | 'datetime-local'
 }) {
   return (
     <FormField
@@ -59,7 +58,7 @@ export function TextField<T extends FieldValues>({
               <Textarea rows={rows} placeholder={placeholder} disabled={disabled} {...field} />
             ) : (
               <Input
-                type={type ?? 'text'}
+                type='text'
                 inputMode={inputMode}
                 autoComplete='off'
                 placeholder={placeholder}
@@ -67,6 +66,56 @@ export function TextField<T extends FieldValues>({
                 {...field}
               />
             )}
+          </FormControl>
+          {description && <FormDescription>{description}</FormDescription>}
+          <FormMessage />
+        </FormItem>
+      )}
+    />
+  )
+}
+
+/**
+ * 时间选择（日期 / 日期时间 / 月份），统一走 `components/date-picker`，不用原生 input。
+ * 值为字符串，格式与它替代的原生 input 一致（见 DatePicker 注释），空串表示未填。
+ */
+export function DateField<T extends FieldValues>({
+  control,
+  name,
+  label,
+  description,
+  disabled,
+  required,
+  mode = 'datetime',
+  placeholder,
+  clearable,
+  min,
+  max,
+}: BaseProps<T> & {
+  mode?: DatePickerMode
+  placeholder?: string
+  clearable?: boolean
+  min?: string
+  max?: string
+}) {
+  return (
+    <FormField
+      control={control}
+      name={name}
+      render={({ field }) => (
+        <FormItem>
+          <Label label={label} required={required} />
+          <FormControl>
+            <DatePicker
+              mode={mode}
+              value={field.value ?? ''}
+              onChange={field.onChange}
+              placeholder={placeholder}
+              disabled={disabled}
+              clearable={clearable ?? !required}
+              min={min}
+              max={max}
+            />
           </FormControl>
           {description && <FormDescription>{description}</FormDescription>}
           <FormMessage />

@@ -32,6 +32,7 @@ type Episode struct {
 	DramaID       int64
 	Access        content.Access
 	TrialSec      int32
+	DurationSec   int32
 	VideoObjectID int64
 	ObjectKey     string
 }
@@ -85,12 +86,14 @@ type SourceLine struct {
 }
 
 // Sources 是选源结果。TrialSec 为 0 表示完整播放，大于 0 表示试看秒数；试看结束后前台按 Access 显示登录墙或 VIP 墙。
+// DurationSec 是整集时长（秒），0 表示未知（老产物未回填）；前台据此把进度条显示为整集长度，试看时可播区间只到 TrialSec。
 type Sources struct {
-	EpisodeID int64          `json:"episode_id"`
-	Region    string         `json:"region"`
-	Access    content.Access `json:"access"`
-	TrialSec  int32          `json:"trial_sec"`
-	Lines     []SourceLine   `json:"lines"`
+	EpisodeID   int64          `json:"episode_id"`
+	Region      string         `json:"region"`
+	Access      content.Access `json:"access"`
+	TrialSec    int32          `json:"trial_sec"`
+	DurationSec int32          `json:"duration_sec"`
+	Lines       []SourceLine   `json:"lines"`
 }
 
 // Service 是选源服务。
@@ -132,7 +135,7 @@ func (s *Service) Sources(ctx context.Context, in SourcesInput) (Sources, error)
 	// 令牌是秒精度，响应里的过期时间与令牌里的一致
 	exp := time.Unix(s.now().Add(TokenTTL).Unix(), 0).UTC()
 	device := playtoken.DeviceHash(in.Viewer.DeviceID)
-	out := Sources{EpisodeID: ep.ID, Region: sel.Region, Access: ep.Access, TrialSec: trial,
+	out := Sources{EpisodeID: ep.ID, Region: sel.Region, Access: ep.Access, TrialSec: trial, DurationSec: ep.DurationSec,
 		Lines: make([]SourceLine, 0, len(sel.Lines))}
 	for _, l := range sel.Lines {
 		tok, err := s.tokens.Sign(playtoken.Claims{

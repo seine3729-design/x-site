@@ -22,7 +22,17 @@ ARG NEXT_ASSET_PREFIX=""
 # 与首屏预算检查失效。build 末尾会跑 scripts/precompress.mjs 产出 .br / .gz（Brotli 11）。
 RUN NEXT_ASSET_PREFIX="${NEXT_ASSET_PREFIX}" NEXT_OUTPUT=standalone bun run build
 
+# ------------------------------------------------------------------ 产物上 CDN（Dokploy 路径）
+# docker-compose.yml 里的 assets 一次性服务。用 Bun 是因为它自带 S3 客户端，不用再装 aws-cli。
+FROM oven/bun:1.4.2-alpine AS assets-uploader
+WORKDIR /app
+COPY --from=build /app/.next/static ./.next/static
+COPY scripts/upload-assets.ts ./scripts/upload-assets.ts
+ENTRYPOINT ["bun", "scripts/upload-assets.ts"]
+
 # ------------------------------------------------------------------ 运行镜像
+# 这个阶段**必须留在最后**：它是不带 --target 构建时的默认目标，
+# .github/workflows/deploy.yml 与 deploy/prod/compose.yaml 都依赖它。
 FROM node:24-bookworm-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production \

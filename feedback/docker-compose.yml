@@ -1,0 +1,123 @@
+# 反馈社区前台（feedback/）在 Dokploy 上的编排。域名 feedback.duanju66.cc。
+#
+# Dokploy 里怎么用：
+#   1. 新建 Compose 服务，Compose Type 选 Docker Compose
+#   2. Provider 选 GitHub/Git，分支 main，Compose Path 填 ./feedback/docker-compose.yml
+#   3. Environment 标签页填下面「必须设置」的变量，然后 Deploy
+#
+# **先部署 service/docker-compose.yml**：`https://feedback.duanju66.cc/open-api/feedback` 的路由
+# 挂在后端那个容器上（Traefik 的标签只能挂在要回源的容器上），本编排只负责站点本身。
+#
+#   浏览器 ──┬─ /_next/static/*       ─────────────→ cdn.duanju66.cc ─→ R2
+#            ├─ /open-api/feedback    ─→ Traefik ─→ xsite-service:8080  （service 那份编排里定义）
+#            └─ 其余（页面、RSC、public/）─→ Traefik ─→ feedback:3002 ─→ xsite-service:8080
+#
+# 浏览器只与本域名同源通信：Next.js 的服务端带 X-Service-Token 转发到 Go（feedback/docs/adr/0008），
+# 所以客户端拿不到后端地址也拿不到服务令牌。`/open-api/feedback` 是唯一的例外 —— 它是站外网页里的
+# JS 直接提交的，在 Go 侧免回源鉴权、改用 X-Api-Key + Key 上的 Origin 白名单（adr/0009），
+# 所以只放这一个精确路径，不放 /open-api/ 前缀。
+#
+# 带内容哈希的 /_next/static 走 CDN，由构建期的 NEXT_ASSET_PREFIX 决定 —— **换 CDN 域名要重新构建**。
+# 前台的 Service Worker（public/sw.js）已经认 CDN 跨源资源，换域名时它的 ASSET_ORIGINS 与
+# VERSION 要一起改。
+
+# 两个服务用同一个构建上下文、同一个构建参数，只是取不同的阶段，
+# 所以共享的那几层只构建一次（第二个是缓存命中）。
+#
+# NEXT_ASSET_PREFIX 不带末尾斜杠（next.config.ts 会 strip 一次，但别依赖它）。
+# 它要和 assets 服务上传到的位置严格对应：
+#   NEXT_ASSET_PREFIX = https://<CDN_HOST>/<CDN_ASSETS_PREFIX>
+#   对象键            = <CDN_ASSETS_PREFIX>/_next/static/...
+x-build-args: &build-args
+  NEXT_ASSET_PREFIX: https://${CDN_HOST:-cdn.duanju66.cc}/${CDN_ASSETS_PREFIX:-feedback}
+
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: '20m'
+      max-file: '5'
+
+services:
+  # ------------------------------------------------------------------ 一次性：产物上 R2
+  # 和 feedback 共用同一段 build，所以上传的产物与正在运行的那一版是同一次构建的，
+  # 内容哈希不可能对不上。不删远端旧对象，清理靠 R2 的生命周期规则（feedback/ 前缀 90 天）。
+  assets:
+    <<: *logging
+    image: ${FEEDBACK_IMAGE:-xsite-feedback}-assets:${RELEASE_TAG:-local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: assets-uploader
+      args: *build-args
+    restart: 'no'
+    environment:
+      R2_ENDPOINT: ${R2_ENDPOINT:?必须设置 R2_ENDPOINT（https://<账户ID>.r2.cloudflarestorage.com）}
+      R2_BUCKET: ${R2_BUCKET:?必须设置 R2_BUCKET}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:?必须设置 R2_ACCESS_KEY_ID}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:?必须设置 R2_SECRET_ACCESS_KEY}
+      # 对象键前缀，和上面构建参数里的那一段是同一个变量，不会配歪
+      CDN_ASSETS_PREFIX: ${CDN_ASSETS_PREFIX:-feedback}
+    networks:
+      - dokploy-network
+
+  # ------------------------------------------------------------------ 站点（Next.js standalone）
+  feedback:
+    <<: *logging
+    image: ${FEEDBACK_IMAGE:-xsite-feedback}:${RELEASE_TAG:-local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+      args: *build-args
+    restart: unless-stopped
+    # 产物没推上 CDN 就先别放流量进来，否则页面会去 CDN 取还不存在的 chunk
+    depends_on:
+      assets:
+        condition: service_completed_successfully
+    # 刻意用 expose 而不是 ports：只对 Traefik 所在的网络开放，不占宿主机端口
+    expose:
+      - '3002'
+    environment:
+      # Dockerfile 里已经设了 PORT=3002 / HOSTNAME=0.0.0.0，这里不重复
+      # Go 后端的内网地址。service 那份编排给自己挂了固定别名 xsite-service，直接用它，
+      # 不用去查 Dokploy 生成的容器名
+      SERVICE_INTERNAL_URL: ${SERVICE_INTERNAL_URL:-http://xsite-service:8080}
+      # 回源服务令牌，必须与 service 的 BFF_SERVICE_TOKEN 完全一致（至少 32 字符）。
+      # 它命中 Go 侧的 isInternalSSR 明文豁免，所以这一端不需要报文加密客户端
+      BFF_SERVICE_TOKEN: ${BFF_SERVICE_TOKEN:?必须设置 BFF_SERVICE_TOKEN（与 service 一致，至少 32 字符）}
+    networks:
+      - dokploy-network
+
+    # Traefik 路由。改用 Dokploy Domains 时把这一段删掉，在界面上加 feedback.duanju66.cc
+    # （服务选 feedback、端口 3002）；/open-api/feedback 那条在 service 那份编排里，不受影响。
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      - traefik.http.services.xsite-feedback.loadbalancer.server.port=3002
+
+      # 兜底路由（HTTPS）。priority 低于 service 容器上的 /open-api/feedback 那条
+      - traefik.http.routers.xsite-feedback-web.rule=Host(`${FEEDBACK_DOMAIN:-feedback.duanju66.cc}`)
+      - traefik.http.routers.xsite-feedback-web.entrypoints=websecure
+      - traefik.http.routers.xsite-feedback-web.tls.certResolver=letsencrypt
+      - traefik.http.routers.xsite-feedback-web.service=xsite-feedback
+      - traefik.http.routers.xsite-feedback-web.priority=10
+
+      # HTTP 入口一律 301 到 HTTPS。
+      # Let's Encrypt 的 HTTP-01 挑战不受影响：Traefik 自己的 ACME 路由优先级更高
+      - traefik.http.routers.xsite-feedback-http.rule=Host(`${FEEDBACK_DOMAIN:-feedback.duanju66.cc}`)
+      - traefik.http.routers.xsite-feedback-http.entrypoints=web
+      - traefik.http.routers.xsite-feedback-http.service=xsite-feedback
+      - traefik.http.routers.xsite-feedback-http.middlewares=xsite-feedback-https
+      - traefik.http.middlewares.xsite-feedback-https.redirectscheme.scheme=https
+      - traefik.http.middlewares.xsite-feedback-https.redirectscheme.permanent=true
+
+      # 刻意不加 compress 中间件：Next.js 的 compress: true 已经按请求 gzip 了 HTML，
+      # Traefik 看到带 Content-Encoding 的响应不会再处理，加了也没用。
+      # 带哈希的产物由 CDN 边缘压，不经过这里。
+      # 想让 HTML 拿到 Brotli 只有一条路：把 next.config.ts 的 compress 关掉再加这个中间件 ——
+      # 那是 feedback/ 自己的取舍（见 feedback/docs/06 第 11 节），别在编排里单方面改
+
+networks:
+  dokploy-network:
+    external: true

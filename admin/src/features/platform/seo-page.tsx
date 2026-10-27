@@ -12,6 +12,7 @@ import { Badge, Button, Input, Textarea } from '@/components/ui'
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form'
 import { LoadError, PageHeading, WithReason } from '@/features/access/shared'
 import { SwitchField, TextField } from '@/features/content/components/fields'
+import { ImageRefField } from '@/features/media/image-preview'
 import { IMAGE_KEY_HINT, isImageKeyOrEmpty, optionLabel } from './branding-utils'
 import {
   analyticsQuery,
@@ -179,13 +180,14 @@ function SEOSections({ config, disabledReason }: { config: SEOConfig; disabledRe
               <SwitchField control={form.control} name='sitemap' label='提供 sitemap.xml' disabled={!editable} />
               <SwitchField control={form.control} name='structured_data' label='输出结构化数据' disabled={!editable} />
             </div>
-            <TextField
+            <ImageRefField
               control={form.control}
               name='og_image'
               label='默认分享图'
               placeholder='选填，如 img/og.webp'
               description={IMAGE_KEY_HINT}
               disabled={!editable}
+              thumbClassName='h-16 w-auto max-w-56 object-contain'
             />
             <TextField
               control={form.control}

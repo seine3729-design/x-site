@@ -27,6 +27,7 @@ import {
 } from '@/components/ui'
 import { Form } from '@/components/ui/form'
 import { LoadError, PageHeading, WithReason } from '@/features/access/shared'
+import { ImageThumb } from '@/features/media/image-preview'
 import { ImageUploadField } from '@/features/media/upload-field'
 import { SelectField, TextField } from '@/features/content/components/fields'
 import { FilterSelect, ResetButton, SearchBox } from '@/features/content/components/list-toolbar'
@@ -157,9 +158,12 @@ export function AnnouncementsPage() {
                       <Badge variant='outline'>{ANNOUNCEMENT_KIND_LABELS[a.kind]}</Badge>
                     </TableCell>
                     <TableCell>
-                      <div className='flex max-w-sm flex-col'>
-                        <span className='line-clamp-2'>{a.content}</span>
-                        {a.click_url && <code className='truncate text-xs text-muted-foreground'>→ {a.click_url}</code>}
+                      <div className='flex max-w-sm items-start gap-2'>
+                        {a.image && <ImageThumb value={a.image} alt='公告配图' className='h-10 w-16' />}
+                        <div className='flex min-w-0 flex-col'>
+                          <span className='line-clamp-2'>{a.content}</span>
+                          {a.click_url && <code className='truncate text-xs text-muted-foreground'>→ {a.click_url}</code>}
+                        </div>
                       </div>
                     </TableCell>
                     <TableCell className='max-w-40 text-sm'>{pagesSummary(a.pages)}</TableCell>
@@ -291,7 +295,7 @@ function AnnouncementDialog({ item, onClose }: { item?: Announcement; onClose: (
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className='max-h-[90vh] overflow-y-auto sm:max-w-2xl'>
+      <DialogContent className='sm:max-w-2xl'>
         <DialogHeader>
           <DialogTitle>{creating ? '新建公告' : `编辑公告 #${item.id}`}</DialogTitle>
           <DialogDescription>弹窗配图使用上传组件；图片会在浏览器压缩为 WebP 再上传。</DialogDescription>
