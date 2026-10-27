@@ -104,12 +104,16 @@ services:
       dockerfile: Dockerfile
     image: ${POSTGRES_IMAGE:-xsite-postgres}:${RELEASE_TAG:-local}
     environment:
+      # 这两个是官方 PostgreSQL entrypoint 的默认超级用户与初始连接库。
+      # 业务库 xsite 由镜像里的 /docker-entrypoint-initdb.d/01-init.sh 在空 pgdata 首启时创建。
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?必须设置 POSTGRES_PASSWORD}
       XSITE_DB: ${XSITE_DB:-xsite}
       XSITE_APP_USER: ${XSITE_APP_USER:-xsite_app}
-      XSITE_APP_PASSWORD: ${XSITE_APP_PASSWORD}
+      XSITE_APP_PASSWORD: ${XSITE_APP_PASSWORD:?必须设置 XSITE_APP_PASSWORD}
       XSITE_RO_USER: ${XSITE_RO_USER:-xsite_ro}
-      XSITE_RO_PASSWORD: ${XSITE_RO_PASSWORD}
+      XSITE_RO_PASSWORD: ${XSITE_RO_PASSWORD:?必须设置 XSITE_RO_PASSWORD}
       TZ: UTC
     command:
       - postgres
@@ -126,6 +130,8 @@ services:
       - -c
       - effective_cache_size=${PG_EFFECTIVE_CACHE_SIZE:-3GB}
     volumes:
+      # PG 18 的 PGDATA 在 /var/lib/postgresql/18/docker，挂载上一级目录才能同时持久化整个集群。
+      # 官方 entrypoint 只在这个卷首次为空时执行镜像内的 01-init.sh；已有卷不会重跑、不会改密码。
       - pgdata:/var/lib/postgresql
     # 只绑在本机回环，便于 psql 与 pg_dump；**不要**改成 0.0.0.0。
     # 默认不是 5432：Dokploy 自己的面板库可能已经占了那个端口
