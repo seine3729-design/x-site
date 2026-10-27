@@ -27,6 +27,31 @@
  * 写法与 apps/scripts/upload-assets.ts、admin/scripts/upload-assets.ts 相同；三端的产物布局
  * 和不传的文件各不一样，而且 Docker 构建上下文互相看不到，所以各自一份。
  */
+/*
+ * 这个脚本只在 feedback/Dockerfile 的 assets-uploader 阶段（Bun 镜像）里跑，而 feedback/ 自己的
+ * 运行时是 Node、tsconfig 里没有 @types/bun。而 tsconfig 的 include 覆盖了全仓库的 .ts，
+ * `next build` 会连这个文件一起类型检查，所以在这里声明用到的那几个 Bun API。
+ *
+ * 刻意不改 feedback/tsconfig.json 去 exclude 它：那等于以后谁都不再检查这个文件，
+ * 而它是发布链路上的一环，写错了只会在部署时才暴露。
+ */
+declare const Bun: {
+	file(path: string): unknown;
+	S3Client: new (options: {
+		endpoint: string;
+		bucket: string;
+		accessKeyId: string;
+		secretAccessKey: string;
+		region?: string;
+	}) => {
+		exists(key: string): Promise<boolean>;
+		write(key: string, data: unknown, options?: { type?: string }): Promise<number>;
+	};
+	Glob: new (pattern: string) => {
+		scan(options: { cwd: string; onlyFiles?: boolean; absolute?: boolean }): AsyncIterable<string>;
+	};
+};
+
 const ROOT = new URL('../', import.meta.url).pathname;
 const SOURCE_DIR = `${ROOT}.next/static`;
 
@@ -133,3 +158,6 @@ if (failed > 0) {
 	// 否则会出现「页面已经发布，但 CDN 上缺它要的 chunk」
 	process.exit(1);
 }
+
+// 顶层 await 要求这个文件是模块，而它没有 import / export
+export {};
