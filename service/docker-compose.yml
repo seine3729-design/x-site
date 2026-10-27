@@ -89,8 +89,9 @@ x-service-env: &service-env
   # 不该因为缺一个第三方 Key 就起不了服务。Key 只到 service，不进任何前端产物
   IMAGE_TINIFY_API_KEY: ${IMAGE_TINIFY_API_KEY:-}
   IMAGE_MAX_SIDE: ${IMAGE_MAX_SIDE:-2400}
-  # 没有这个文件时地区一律按未知处理，只有 region_scope=global 的兜底线路会命中
-  GEOIP_XDB_PATH: ${GEOIP_XDB_PATH:-/data/geoip/ip2region.xdb}
+  # GeoIP 可选：留空时地区一律按未知处理，只有 region_scope=global 的兜底线路会命中。
+  # 只有 geoip 卷中已放入有效文件时，才显式设为 /data/geoip/ip2region.xdb。
+  GEOIP_XDB_PATH: ${GEOIP_XDB_PATH:-}
   GEOIP_RELOAD_INTERVAL: ${GEOIP_RELOAD_INTERVAL:-10m}
 
   OTEL_SERVICE_NAME: xsite-service

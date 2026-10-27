@@ -68,7 +68,8 @@ x-service-env: &service-env
   # 不该因为缺一个第三方 Key 就起不了服务。Key 只到 service，不进任何前端产物。
   IMAGE_TINIFY_API_KEY: ${IMAGE_TINIFY_API_KEY:-}
   IMAGE_MAX_SIDE: ${IMAGE_MAX_SIDE:-2400}
-  GEOIP_XDB_PATH: ${GEOIP_XDB_PATH:-/data/geoip/ip2region.xdb}
+  # GeoIP 可选：文件尚未放入挂载目录时必须留空，否则生产进程会按配置错误退出。
+  GEOIP_XDB_PATH: ${GEOIP_XDB_PATH:-}
   GEOIP_RELOAD_INTERVAL: ${GEOIP_RELOAD_INTERVAL:-10m}
 
   OTEL_SERVICE_NAME: xsite-service
