@@ -18,6 +18,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/rivermigrate"
+
 	"xsite/service/internal/config"
 	"xsite/service/internal/crypto/password"
 	"xsite/service/internal/domain/admin"
@@ -31,8 +34,8 @@ const usage = `用法：
   密码从标准输入读取一行（8–128 位）
 
   admintool migrate
-  执行嵌入在本二进制里的 goose 迁移（只升不降）。production 禁用 AUTO_MIGRATE，
-  发布流程用这条命令在 API 启动之前把库升到位（docs/11 X0-6）`
+  执行嵌入在本二进制里的 Goose 业务迁移与 River 官方迁移（只升不降）。production 禁用
+  AUTO_MIGRATE，发布流程用这条命令在 API 和 worker 启动之前把两套 schema 升到位（docs/11 X0-6）`
 
 func main() {
 	if err := run(os.Args[1:], os.Stdin); err != nil {
@@ -59,19 +62,19 @@ func run(args []string, stdin io.Reader) error {
 	}
 }
 
-// migrate 执行嵌入的迁移。迁移二进制与 API 二进制来自同一次构建，所以库的 schema 一定和即将启动的
-// 代码配套 —— 这是不用单独做一个带 goose 的镜像的原因。
+// migrate 执行嵌入的业务迁移与 River 官方迁移。迁移二进制与 API 二进制来自同一次构建，所以库的
+// schema 一定和即将启动的代码配套 —— 这是不用单独做一个带迁移工具的镜像的原因。
 func migrate(args []string) error {
 	if len(args) > 1 {
 		return errors.New(usage)
 	}
-	// 迁移只需要 DATABASE_URL。不能加载 API/worker 的完整 Config：BFF、Valkey、S3、
+	// 两套迁移都只需要 DATABASE_URL。不能加载 API/worker 的完整 Config：BFF、Valkey、S3、
 	// 报文加密或后台二次验证的任意配置没填好，都不该阻止数据库 schema 升级。
 	cfg, err := config.LoadMigration()
 	if err != nil {
 		return err
 	}
-	// 大表迁移可能很慢，给足时间；失败时发布流程会停住，不会让 API 带着不兼容的 schema 起来
+	// 大表迁移可能很慢，给足时间；失败时发布流程会停住，不会让 API 带着不兼容的 schema 起来。
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 	pool, err := pg.NewPool(ctx, cfg.DatabaseURL)
@@ -79,10 +82,19 @@ func migrate(args []string) error {
 		return err
 	}
 	defer pool.Close()
+
 	if err := pg.Migrate(ctx, pool); err != nil {
 		return err
 	}
-	fmt.Println("迁移已执行到最新版本")
+	riverMigrator, err := rivermigrate.New(riverpgxv5.New(pool), nil)
+	if err != nil {
+		return fmt.Errorf("初始化 River 迁移失败: %w", err)
+	}
+	if _, err := riverMigrator.Migrate(ctx, rivermigrate.DirectionUp, nil); err != nil {
+		return fmt.Errorf("执行 River 迁移失败: %w", err)
+	}
+
+	fmt.Println("Goose 与 River 迁移已执行到最新版本")
 	return nil
 }
 

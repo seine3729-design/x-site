@@ -172,7 +172,7 @@ cd /opt/xsite
 - **先迁移再起服务**。production 禁用 `AUTO_MIGRATE`（启动校验会拒），库必须先到位。迁移失败就停在这里，旧版本还在跑。
 - **最后重载 nginx**。开源版 nginx 只在启动/重载时解析 `upstream` 里的服务名（`server x:1 resolve;` 是 nginx Plus 的功能）。重建过的容器 IP 变了而 nginx 不知道，会一直 502。
 
-数据库迁移走 `admintool migrate`（嵌入式 goose，只升不降）。迁移二进制和 API 二进制来自同一次构建，所以 schema 必然和即将启动的代码配套，不需要另做一个带 goose 的镜像。
+数据库迁移走 `admintool migrate`（嵌入式 Goose 业务迁移 + River 官方迁移，均只升不降）。迁移二进制和 API 二进制来自同一次构建，所以业务 schema 与任务队列 schema 都和即将启动的代码配套，不需要另做迁移镜像。
 
 ## 4. 静态资源、CDN 与压缩
 

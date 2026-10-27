@@ -43,7 +43,7 @@ x-database-env: &database-env
   DATABASE_URL: postgres://${XSITE_APP_USER:-xsite_app}:${XSITE_APP_PASSWORD:?必须设置 XSITE_APP_PASSWORD}@postgres:5432/${XSITE_DB:-xsite}?sslmode=disable
 
 # API 与 worker 共享完整配置。只有某一类需要的项在各自服务里追加。
-# 刻意不让 migrate 复用这里：它只跑 Goose，BFF / Valkey / S3 / 密钥等配置不能阻塞建表。
+# 刻意不让 migrate 复用这里：它只跑 Goose 与 River 迁移，BFF / Valkey / S3 / 密钥等配置不能阻塞建表。
 x-service-env: &service-env
   <<: *database-env
   APP_ENV: production
@@ -177,7 +177,8 @@ services:
       - dokploy-network
 
   # ------------------------------------------------------------------ 迁移（一次性）
-  # 嵌入式 goose，只升不降，与 API 同一次构建（生产镜像是 distroless，里面没有 goose 也没有 shell）。
+  # 嵌入式 Goose 业务迁移 + River 官方迁移，均只升不降，并与 API 同一次构建。
+  # 生产镜像是 distroless，里面没有 shell，也不依赖外置 goose / river 命令。
   # 失败就停在这里、service 不会起，旧版本继续跑。
   migrate:
     <<: [*image, *logging]
