@@ -146,6 +146,10 @@ apps/src/
 - 筛选条件写入 URL 查询串（可分享、可缓存）；切换筛选用 `goto(..., { keepFocus: true, noScroll: true })`，结果列表请求带 `AbortController` 取消旧请求。
 - 手机筛选抽屉，确认键显示「查看 N 部」[推断]；已选条件 chip 可单删/清空。
 - 列表无限滚动 + 虚拟列表（超过 200 项时启用），内插信息流广告。
+- **`InfiniteGrid` 的「丢掉已追加页」只能按第一页的内容指纹判断，不能按 `initial` 这个对象的身份判断**（`/explore`、`/search`、`/tag/:slug` 三处共用它）。它们传进去的是 SvelteKit 的 `data.result`，load 一重跑就是个新对象，**即使内容完全一样**。按身份判断的后果：已追加的几页被清空、列表塌缩回第一页、页面随之变矮，浏览器把滚动位置钳到顶部——用户看到的是「滑到一半忽然跳回顶部、图片重新加载一遍」。
+  - 实测红→绿：滚到底追加成 25 张后导航到 `/explore?sort=latest`（`latest` 就是默认排序，所以 `sort` 这个 key 从缺省变成显式会让 SvelteKit 重跑 load，而筛选结果完全相同）。按身份判断时掉回 24 张；按内容指纹判断保持 25 张。换成 `?sort=hot`（筛选真的变了）两种写法都正确重置回 24 张。
+  - 指纹是 `next_cursor + 第一页所有 id`；`$effect.pre` 里只读这个指纹，重置时读 `initial` 必须包一层 `untrack`，否则又把对象身份变成了依赖。
+  - 注意 SvelteKit 的 URL 依赖是**细到 searchParams 具体 key** 的：加一个 load 没读过的参数（如 `?_probe=1`）根本不会重跑 load，拿它当测试场景会得到假通过（踩过）。
 
 ### 4. 频道/标签/专题
 - **频道 `/c/:slug`**：排序 + 分页（上一页/下一页/跳页）+「共 N 部」；第 8 部后插一格图片广告。
@@ -417,7 +421,14 @@ apps/src/
 只取 Service Worker 带来的加载速度与离线兜底，**不做「安装到桌面」**。
 
 - **刻意不提供 web app manifest**：浏览器判定「可安装」的前提之一就是 manifest，没有它地址栏不会出现安装图标、也不会弹安装横幅。`register-service-worker.svelte` 另外监听 `beforeinstallprompt` 并 `preventDefault()`，万一某个浏览器仍然触发也不弹。原 `/manifest.webmanifest` 路由与 `<link rel="manifest">` 已删除。
-- 生产构建才注册（`dev` 时直接跳过），缓存名带构建版本：新版激活时删旧缓存并通知页面。
+- 生产构建才注册（`dev` 时直接跳过），缓存名带构建版本，新版激活时删掉旧版缓存。
+- **版本号必须是内容指纹，不能是构建时刻；激活后不要通知页面重载。** 这两条合起来曾经造成线上事故（用户报「移动端往下滑一直闪、自动回到顶部」）：
+  - `build-sw.ts` 原来取 `Date.now()` 当版本，于是同一份代码每次构建都产出不同的 SW。线上多副本 + 边缘缓存之下，**实测 8 次请求 `/service-worker.js` 拿到 3 个版本**（21:18 / 21:47 / 22:54 的构建）。
+  - 浏览器每次 `registration.update()` 随机打到其中一个 → 内容与已装的不同 → 判定有新版本 → `skipWaiting()` 立刻激活 → `activate` 发现缓存名不匹配、删掉旧缓存 → 原来会给所有窗口发 `sv-reload`，客户端收到就 `location.reload()` → **下一次 update 又打到别的版本，无限循环**。
+  - 移动端最明显：滑动时地址栏显隐就触发 `visibilitychange`，而那里每次都调 `update()`。
+  - 现在：版本取「以空版本号编译一次所得产物」的 sha256 前 16 位（同代码必定同版本，`SW_VERSION` 仍可覆盖）；`activate` 只清缓存 + `clients.claim()`，**不发任何重载通知**，新版本在下次导航或用户自己刷新时生效；`visibilitychange` 查更新加了 30 分钟节流。
+  - `/service-worker.js` 由 `hooks.server.ts` 显式设 `cache-control: no-cache`。它从 `static/` 复制进产物、不走 SSR 文档分支，自己没有 cache-control 时 Cloudflare 会套默认的 `max-age=14400`（4 小时），边缘节点就会各自存着不同构建的副本。
+  - 回归口径：连续构建三次，`bun scripts/build-sw.ts` 打印的版本号必须完全一致；产物里 `grep -c sv-reload` 必须为 0；`curl -I /service-worker.js` 必须是 `no-cache`。
 - **源码在 `src/sw/index.ts`，不由 SvelteKit 构建**，而是 `scripts/build-sw.ts` 用 Bun 编译到
   `static/service-worker.js`（构建版本与产物前缀以 `__SW_VERSION__` / `__SW_ASSET_BASE__` 注入）。
   原因：SvelteKit 只要扫到自己管的 SW 入口文件、而 `paths.assets` 又非空，就直接以

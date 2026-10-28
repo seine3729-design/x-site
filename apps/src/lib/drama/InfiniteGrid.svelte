@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import type { CursorPage, DramaCard } from '#lib/api/types.ts';
 	import { getI18n } from '#lib/i18n/context.ts';
 	import Icon from '#lib/ui/Icon.svelte';
@@ -21,12 +22,25 @@
 	let sentinel = $state<HTMLDivElement>();
 	let controller: AbortController | null = null;
 
-	// 筛选或排序变了（initial 换成新的第一页）：丢掉已追加的页、取消进行中的请求
+	/**
+	 * 第一页的内容指纹。下面的重置按它走，**不能按 `initial` 这个对象的身份走**：
+	 * 父组件传进来的是 SvelteKit 的 `data.result`，导航或 invalidate 之后会是一个内容相同的新对象，
+	 * 按身份判断就会把已经追加的那几页全丢掉——列表塌缩回第一页、页面随之变矮，
+	 * 浏览器把滚动位置钳到能滚到的最远处（往往就是顶部），用户看到的是「滑到一半忽然跳回顶部、
+	 * 图片重新加载一遍」。线上排查过一次同样的症状（成因是别处，见 docs/04 D 节），这里属于同类隐患。
+	 */
+	const initialKey = $derived(`${initial.next_cursor ?? ''}|${initial.list.map((card) => card.id).join(',')}`);
+
+	// 筛选、排序或关键词变了（第一页换了内容）：丢掉已追加的页、取消进行中的请求
 	$effect.pre(() => {
-		cursor = initial.next_cursor;
-		extra = [];
-		phase = 'idle';
-		controller?.abort();
+		// 只认指纹这一个依赖；重置时读 initial 要 untrack，否则又会按对象身份重跑
+		void initialKey;
+		untrack(() => {
+			cursor = initial.next_cursor;
+			extra = [];
+			phase = 'idle';
+			controller?.abort();
+		});
 	});
 
 	// 翻页期间榜单可能变化，同一部剧出现在两页时只留第一次出现的

@@ -220,6 +220,18 @@ export const handle: Handle = async ({ event, resolve }) => {
 		);
 	}
 
+	/*
+	 * Service Worker 脚本必须每次回源验证。
+	 * 它由 static/ 复制进产物，不走上面的文档分支、自己没有 cache-control，于是 Cloudflare 套用
+	 * 默认的浏览器缓存（实测 max-age=14400，4 小时）。被边缘缓存住之后，不同节点会各自存着不同
+	 * 构建的副本——线上实测 8 次请求拿到 3 个版本。浏览器每次 registration.update() 随机打到
+	 * 其中一个，就会反复判定「有新版本」并重新安装，表现为页面一直刷、滚动位置被打回顶部。
+	 * no-cache 是「可以存但用前必须验证」，配合 ETag 仍能走 304，不会增加多少流量。
+	 */
+	if (pathname === '/service-worker.js') {
+		response.headers.set('cache-control', 'no-cache');
+	}
+
 	response.headers.set('x-request-id', requestId);
 
 	return compressResponse(

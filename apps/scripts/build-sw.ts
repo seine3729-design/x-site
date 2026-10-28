@@ -14,12 +14,16 @@
  * 既进路由表，也顺带被 adapter 的 precompress 压成 `.br` / `.gz`。
  *
  * 注入两个常量：
- *   __SW_VERSION__      给缓存命名用，每次构建都要变（新版激活时据此删掉上一版的页面缓存）。
- *                       默认取当前时间戳，`SW_VERSION` 可覆盖（需要可复现构建时用）。
+ *   __SW_VERSION__      给缓存命名用，取**编译产物的内容指纹**，`SW_VERSION` 可覆盖。
+ *                       绝对不要改回时间戳：那样同一份代码在不同机器上、或先后构建两次，会得到
+ *                       两个不同版本的 SW。线上多副本 + 边缘缓存之下，浏览器每次 update() 随机
+ *                       拿到其中一个，就反复判定「有新版本」→ 装新 SW → 清掉另一版的缓存，
+ *                       用户表现为页面一直刷、滚动位置被打回顶部（实测线上同时有 3 个版本在跑）。
  *   __SW_ASSET_BASE__   产物前缀，必须与 SvelteKit 写进 HTML 的那个值逐字相同，否则 SW 预缓存时
  *                       扒不到产物地址、运行时也接不住产物请求。两边读的是同一个 CDN_ASSET_PREFIX
  *                       （由 scripts/with-env.ts 载入同一份环境），所以天然一致。
  */
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -37,8 +41,6 @@ if (!existsSync(entry)) {
 	fail(`找不到入口文件 ${entry}`);
 }
 
-const version = process.env.SW_VERSION?.trim() || String(Date.now());
-
 // 与 vite.config.ts 的 assetPrefix() 同一套规范化：去掉末尾斜杠，必须带 scheme
 const assetBase = (process.env.CDN_ASSET_PREFIX ?? '').replace(/\/$/, '');
 
@@ -46,25 +48,33 @@ if (assetBase && !/^https?:\/\//.test(assetBase)) {
 	fail(`CDN_ASSET_PREFIX 必须以 http:// 或 https:// 开头：${assetBase}`);
 }
 
-const result = await Bun.build({
-	entrypoints: [entry],
-	target: 'browser',
-	format: 'esm',
-	minify: true,
-	define: {
-		__SW_VERSION__: JSON.stringify(version),
-		__SW_ASSET_BASE__: JSON.stringify(assetBase)
-	}
-});
+async function compile(swVersion: string): Promise<string> {
+	const result = await Bun.build({
+		entrypoints: [entry],
+		target: 'browser',
+		format: 'esm',
+		minify: true,
+		define: {
+			__SW_VERSION__: JSON.stringify(swVersion),
+			__SW_ASSET_BASE__: JSON.stringify(assetBase)
+		}
+	});
 
-if (!result.success || result.outputs.length === 0) {
-	for (const log of result.logs) {
-		console.error(log);
+	if (!result.success || result.outputs.length === 0) {
+		for (const log of result.logs) {
+			console.error(log);
+		}
+		fail('编译没有产出文件');
 	}
-	fail('编译没有产出文件');
+
+	return result.outputs[0]!.text();
 }
 
-const code = await result.outputs[0]!.text();
+// 先用空版本编译一次取内容指纹，再用指纹编译出最终产物：同一份代码必定得到同一个版本号。
+// 指纹覆盖了 SW 源码与 assetBase，这两样一变版本就变，该更新的时候照样会更新。
+const probe = await compile('');
+const version = process.env.SW_VERSION?.trim() || createHash('sha256').update(probe).digest('hex').slice(0, 16);
+const code = await compile(version);
 
 mkdirSync(outDir, { recursive: true });
 writeFileSync(outFile, code);

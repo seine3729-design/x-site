@@ -201,13 +201,15 @@ sw.addEventListener('activate', (event) => {
 			const stale = keys.filter((key) => key.startsWith('sv-') && !keep.has(key));
 			await Promise.all(stale.map((key) => caches.delete(key)));
 			await sw.clients.claim();
-			if (stale.length === 0) {
-				return;
-			}
-			const windows = await sw.clients.matchAll({ type: 'window', includeUncontrolled: true });
-			for (const client of windows) {
-				client.postMessage({ type: 'sv-reload' });
-			}
+			/*
+			 * 这里**不要**通知页面重载。
+			 * 清掉旧缓存不等于页面必须立刻刷新：claim() 之后后续请求就都走新 SW 了，
+			 * 新版本会在下一次导航或用户自己刷新时自然生效。
+			 * 以前这里给所有窗口发 `sv-reload`，客户端收到就 location.reload()。一旦版本号不稳定
+			 * （见 scripts/build-sw.ts 里的说明）这就成了重载循环：用户正往下滑，页面突然刷新、
+			 * 滚动位置被打回顶部、图片全部重新加载。移动端滑动时 visibilitychange 频繁触发
+			 * registration.update()，所以那边最明显。
+			 */
 		})()
 	);
 });
