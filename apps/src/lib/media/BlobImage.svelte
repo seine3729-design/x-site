@@ -73,49 +73,33 @@
 	 * 对应 ui-ux loading-indicators：不要为近乎瞬时的工作闪现指示器。
 	 */
 	const SKELETON_DELAY_MS = 300;
-	/** 图片淡入时长，必须与下面 <img> 上的 duration-500 保持一致 */
-	const IMAGE_FADE_MS = 500;
 
 	/**
 	 * 扫光的相位：一批图往往同时开始加载，骨架也就同时挂上去，扫光于是完全同步——
 	 * 实测一屏抽样 6 个骨架高光位置差不到 0.06（归一化），整屏高光齐刷刷一起扫过，
 	 * 看着就像整页一起闪。按实例顺序错开四档，视觉上变成波浪。
-	 * 错开量刻意压在半个周期以内（周期 1.6s）：排在最后的也只晚 0.45s 起扫，
-	 * 而骨架一旦画出来实测至少活 500ms，不会有骨架从头到尾都不动。
+	 * 错开量刻意压在半个周期以内（周期 1.6s）：排在最后的也只晚 0.45s 起扫。
 	 */
 	const shimmerDelay = nextShimmerDelay();
 
 	/** 等够了 SKELETON_DELAY_MS 图还没来：可以画骨架了 */
 	let skeletonDue = $state(false);
-	/** 图片已经完全盖住下面的骨架，可以把骨架摘掉了 */
-	let covered = $state(false);
 
-	// 骨架延迟登场。注意 ready 之后不在这里把它关掉：摘骨架的时机交给 covered。
+	/*
+	 * 骨架延迟登场；图片一解码（ready）就立刻摘掉。
+	 *
+	 * 曾经改成「等图片淡入完成（500ms）再摘」，想躲掉摘除瞬间高光突然消失的那一下，结果更糟：
+	 * 淡入中的图片是半透明的，下层那道移动的高光会直接透上来，叠在封面图上成了一条亮带——
+	 * 用户报的「图片加载出来了又闪」就是这个（实测淡入期间 83% 的采样点高光正落在元素里）。
+	 * 而它想躲的那个跳变其实看不见：高光色 --raised 与底色 --sunken 的亮度差实测只有 5.2/255 ≈ 2%。
+	 * 所以这里只做延迟登场，不要再加延迟摘除。
+	 */
 	$effect(() => {
-		if (!started) {
+		if (!started || ready) {
 			skeletonDue = false;
 			return;
 		}
-		if (ready) {
-			return;
-		}
 		const timer = setTimeout(() => (skeletonDue = true), SKELETON_DELAY_MS);
-		return () => clearTimeout(timer);
-	});
-
-	/*
-	 * 等图片淡入完成再摘骨架，而不是一解码就摘。
-	 * 扫光是一道横扫的高光，摘掉的那一刻它停在哪儿是随机的——实测七成情况下高光还在元素里，
-	 * 直接把骨架从 DOM 里拿掉，这道高光就凭空消失，又是一次可见的亮度跳变。
-	 * 图片是 absolute inset-0 object-cover，完全不透明时整块盖住骨架，这时候摘就什么都看不出来。
-	 * 代价是多留 500ms 的合成器动画，比原先「解码完立刻摘」略高，但只在真正显示过骨架的图上发生。
-	 */
-	$effect(() => {
-		if (!ready) {
-			covered = false;
-			return;
-		}
-		const timer = setTimeout(() => (covered = true), IMAGE_FADE_MS);
 		return () => clearTimeout(timer);
 	});
 
@@ -265,15 +249,15 @@
 	    按剧名生成的渐变，于是一页里每张卡一个颜色；骨架才是「正在加载」该有的样子。
 	  - **取不到图才用 fallback**（带剧名的占位）。那是内容状态而不是加载状态，让它一直闪会让人
 	    以为还在加载。没有 fallback 的地方（广告、Logo）就留 holder 的平底色。
-	  骨架的出场与退场都刻意错开（见上面 SKELETON_DELAY_MS / IMAGE_FADE_MS）：图来得快就根本不画，
-	  画了就等图片淡入盖住它之后才摘。它的底色与 holder 的 bg-sunken 是同一个令牌，又从高光在元素
-	  左侧之外的位置开始扫，所以出场那一下也看不出变化。
+	  骨架只推迟出场、不推迟退场（见上面 SKELETON_DELAY_MS）：图来得快就根本不画，解码完就立刻摘。
+	  它的底色与 holder 的 bg-sunken 是同一个令牌，又从高光在元素左侧之外的位置开始扫，
+	  所以出场和退场那两下都看不出变化，图片始终是在一块平底色上淡入。
 	-->
 	{#if failed}
 		{#if fallback}
 			<span class="absolute inset-0" aria-hidden="true">{@render fallback()}</span>
 		{/if}
-	{:else if skeletonDue && !covered}
+	{:else if skeletonDue}
 		<span class="skeleton absolute inset-0 block" style:--shimmer-delay={shimmerDelay} aria-hidden="true"></span>
 	{/if}
 
