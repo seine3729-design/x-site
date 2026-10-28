@@ -6,14 +6,85 @@
 	import Poster from '#lib/drama/Poster.svelte';
 	import { compactNumber, score } from '#lib/format.ts';
 	import { getI18n } from '#lib/i18n/context.ts';
+	import { imageCache } from '#lib/media/blob-image.ts';
+	import { imageSources, resizedSrcset, resizedUrl } from '#lib/media/image.ts';
+	import { holdImagesUntilLead, releaseAfterPaint } from '#lib/media/lead.ts';
+	import { getSite } from '#lib/site.ts';
 	import Icon from '#lib/ui/Icon.svelte';
 
 	type Props = { dramas: DramaCard[]; label: string; priority?: boolean };
 	let { dramas, label, priority = false }: Props = $props();
 
 	const i18n = getI18n();
+	const site = $derived(getSite());
 	const slides = $derived(dramas.slice(0, 8));
 	const INTERVAL_MS = 6000;
+
+	/*
+	 * 首屏第一张大图就是 LCP 元素，它不走 BlobImage（docs/08 第 5 节「LCP 超预算时首屏首图回退普通 <img>」）：
+	 * BlobImage 要等脚本下载、水合完才开始 fetch，实测移动端 LCP 因此拖到 10 秒以上。
+	 * 这里直接在 SSR 的 HTML 里输出 <picture>：浏览器解析到就下载（head 里还有一条 preload 更早发出），
+	 * 手机竖封面、电脑横封面用 media 二选一，只下其中一张。其余几张仍是 BlobImage，滑到才取。
+	 */
+	const LEAD_MOBILE_WIDTHS = [360, 540, 720, 1080] as const;
+	const LEAD_DESKTOP_WIDTHS = [720, 1080, 1440, 1920] as const;
+	/*
+	 * 手机上按 360px 宽来挑档位（实际铺满整屏，约 360–430px）：等于把像素密度封顶在 2 倍左右。
+	 * 照实写 100vw 的话，412px × 1.75 倍屏（Lighthouse 的模拟机型）要 721 像素，720 档差 1 像素，
+	 * 浏览器就直接挑 1080 档，字节数多六成（实测质量 70 时 84 KB → 135 KB）；轮播图上压着一层暗色渐变，2 倍密度足够。
+	 * 640px 以上（平板竖屏）照实按整屏宽挑。
+	 */
+	const LEAD_MOBILE_SIZES = '(max-width: 639px) 360px, 100vw';
+	// 电脑端轮播在 page-x 里：最宽 1440 减两侧 2rem 内边距；更窄时是视口宽减内边距（多估一点无妨）
+	const LEAD_DESKTOP_SIZES = '(min-width: 90rem) 86rem, calc(100vw - 4rem)';
+	const LEAD_DESKTOP_MEDIA = '(min-width: 64rem)';
+	// 首图下半部压着一层很深的渐变，质量 60 肉眼看不出差别；实测 720 宽 AVIF 84 KB → 70 KB
+	const LEAD_QUALITY = 60;
+
+	const lead = $derived.by(() => {
+		const first = slides[0];
+		if (!priority || !first) {
+			return null;
+		}
+		const mobile = imageSources(first.cover_portrait || first.cover_landscape, site.imageBases)[0];
+		const desktop = imageSources(first.cover_landscape || first.cover_portrait, site.imageBases)[0];
+		if (!mobile || !desktop) {
+			return null;
+		}
+		const origins = site.resizeOrigins;
+		return {
+			mobile,
+			desktop,
+			mobileSrcset: resizedSrcset(mobile, LEAD_MOBILE_WIDTHS, origins, LEAD_QUALITY),
+			desktopSrcset: resizedSrcset(desktop, LEAD_DESKTOP_WIDTHS, origins, LEAD_QUALITY),
+			mobileSrc: resizedUrl(mobile, { width: 720, quality: LEAD_QUALITY }, origins) ?? mobile
+		};
+	});
+
+	/** 缩放入口不可用（没接 Cloudflare 的域名上是 404）时退回原图；原图也失败就只留渐变占位 */
+	let leadStage = $state<'resized' | 'original' | 'failed'>('resized');
+	const leadResized = $derived(leadStage === 'resized' && !!lead?.mobileSrcset);
+	let leadImg = $state<HTMLImageElement>();
+	/** 首图画出来（或失败）后放行其余图片，见 #lib/media/lead.ts；onMount 里才拦（模块状态不能在 SSR 里动） */
+	let releaseLead: (() => void) | null = null;
+
+	function onLeadLoad() {
+		const done = releaseLead;
+		if (done) {
+			releaseAfterPaint(leadImg, done);
+		}
+	}
+
+	function onLeadError() {
+		if (leadResized) {
+			// 后面的 BlobImage 也别再试缩放入口了；换成原图继续拦着，等原图画出来
+			imageCache.resizeBroken = true;
+			leadStage = 'original';
+		} else {
+			leadStage = 'failed';
+			releaseLead?.();
+		}
+	}
 
 	let track = $state<HTMLUListElement>();
 	let active = $state(0);
@@ -60,6 +131,13 @@
 	}
 
 	onMount(() => {
+		if (lead && leadStage !== 'failed') {
+			releaseLead = holdImagesUntilLead();
+			// 首图常常在水合之前就下完了：那次 load 事件可能已经错过，这里补一次
+			if (leadImg?.complete && leadImg.naturalWidth > 0) {
+				onLeadLoad();
+			}
+		}
 		reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 		const onVisibility = () => {
 			paused = document.hidden;
@@ -94,6 +172,34 @@
 	}
 </script>
 
+<svelte:head>
+	{#if lead}
+		<!--
+		  首图预加载：<svelte:head> 排在内联样式前面，HTML 的第一个包就能让浏览器发出请求，
+		  不用等解析到 body 里的 <picture>。media 与下面的 <source> 互补，同一时刻只有一条生效；
+		  srcset / sizes 与 <img> 完全一致，浏览器挑出同一个地址，不会重复下载。
+		-->
+		<link
+			rel="preload"
+			as="image"
+			fetchpriority="high"
+			media="not all and {LEAD_DESKTOP_MEDIA}"
+			href={lead.mobileSrcset ? undefined : lead.mobile}
+			imagesrcset={lead.mobileSrcset || undefined}
+			imagesizes={lead.mobileSrcset ? LEAD_MOBILE_SIZES : undefined}
+		/>
+		<link
+			rel="preload"
+			as="image"
+			fetchpriority="high"
+			media={LEAD_DESKTOP_MEDIA}
+			href={lead.desktopSrcset ? undefined : lead.desktop}
+			imagesrcset={lead.desktopSrcset || undefined}
+			imagesizes={lead.desktopSrcset ? LEAD_DESKTOP_SIZES : undefined}
+		/>
+	{/if}
+</svelte:head>
+
 <!--
   首页轮播。手机是竖版整屏大图 + 居中标题 + 一个大「立即观看」（图五那种）；
   电脑是满幅横幅 + 左下文案 + 右下缩略图切换（图四那种），缩略图替代圆点，一眼能看到后面几部。
@@ -124,28 +230,57 @@
 				<!-- 电脑端 16:5 并限高 26rem：接近通栏横幅的比例，文案在左下，右下留给缩略图条 -->
 				<div class="relative aspect-[4/5] sm:aspect-[16/9] lg:aspect-[16/5] lg:max-h-[26rem] lg:w-full">
 					<!-- 手机竖屏用竖封面整幅铺（人脸在上半部，取顶部对齐），电脑优先横封面 -->
-					<div class="absolute inset-0 overflow-hidden lg:hidden" aria-hidden="true">
-						<Poster
-							cover={drama.cover_portrait || drama.cover_landscape}
-							title={drama.title}
-							shape="landscape"
-							decorative
-							priority={priority && index === 0}
-							class="absolute! inset-0 size-full"
-							imgClass="object-cover object-top"
-						/>
-					</div>
-					<div class="absolute inset-0 hidden overflow-hidden lg:block" aria-hidden="true">
-						<Poster
-							cover={drama.cover_landscape || drama.cover_portrait}
-							title={drama.title}
-							shape="landscape"
-							decorative
-							priority={priority && index === 0}
-							class="absolute! inset-0 size-full"
-							imgClass="object-cover object-top"
-						/>
-					</div>
+					{#if index === 0 && lead}
+						<!-- 首图：底下垫渐变占位，<picture> 直接盖在上面。不做淡入——淡入要等脚本，LCP 也会跟着推迟 -->
+						<div class="absolute inset-0 overflow-hidden" aria-hidden="true">
+							<Poster cover="" title={drama.title} shape="landscape" decorative class="absolute! inset-0 size-full" />
+							{#if leadStage !== 'failed'}
+								{#key leadStage}
+									<picture>
+										<source
+											media={LEAD_DESKTOP_MEDIA}
+											srcset={leadResized && lead.desktopSrcset ? lead.desktopSrcset : lead.desktop}
+											sizes={leadResized && lead.desktopSrcset ? LEAD_DESKTOP_SIZES : undefined}
+										/>
+										<!-- data-lead：src/hooks.client.ts 等它画出来再水合 -->
+										<img
+											bind:this={leadImg}
+											data-lead=""
+											src={leadResized ? lead.mobileSrc : lead.mobile}
+											srcset={leadResized ? lead.mobileSrcset : undefined}
+											sizes={leadResized ? LEAD_MOBILE_SIZES : undefined}
+											alt=""
+											fetchpriority="high"
+											class="absolute inset-0 size-full object-cover object-top"
+											onload={onLeadLoad}
+											onerror={onLeadError}
+										/>
+									</picture>
+								{/key}
+							{/if}
+						</div>
+					{:else}
+						<div class="absolute inset-0 overflow-hidden lg:hidden" aria-hidden="true">
+							<Poster
+								cover={drama.cover_portrait || drama.cover_landscape}
+								title={drama.title}
+								shape="landscape"
+								decorative
+								class="absolute! inset-0 size-full"
+								imgClass="object-cover object-top"
+							/>
+						</div>
+						<div class="absolute inset-0 hidden overflow-hidden lg:block" aria-hidden="true">
+							<Poster
+								cover={drama.cover_landscape || drama.cover_portrait}
+								title={drama.title}
+								shape="landscape"
+								decorative
+								class="absolute! inset-0 size-full"
+								imgClass="object-cover object-top"
+							/>
+						</div>
+					{/if}
 					<!-- 文字一侧压暗，保证白字在任何封面上可读 -->
 					<div
 						class="absolute inset-0 bg-gradient-to-t from-black/90 via-black/35 to-black/10 lg:bg-gradient-to-r lg:from-black/85 lg:via-black/45 lg:to-transparent rtl:lg:bg-gradient-to-l"

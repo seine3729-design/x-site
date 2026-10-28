@@ -46,6 +46,11 @@ func (w *GeoIPReloadWorker) Work(ctx context.Context, job *river.Job[GeoIPReload
 }
 
 // ConfigureGeoIPReload 注册热更新 worker 与周期任务。r 为 nil（没配数据文件）时什么都不做。
+//
+// 下面这个 nil 判断只拦得住真正的 nil 接口。调用方必须自己先判断具体类型是否为 nil ——
+// 把一个 nil 的 *geoip.Resolver 直接传进来会得到「非 nil 接口里装着 nil 指针」，
+// 这里放行、任务照常注册，然后每轮执行都在 Reload 里 panic（Reload 现在对 nil 接收者安全，
+// 但任务仍是白跑的）。同样的坑见 http/admin/upload.ImageOptimizer 的注释。
 func ConfigureGeoIPReload(cfg *river.Config, r GeoReloader, interval time.Duration) {
 	if r == nil {
 		return

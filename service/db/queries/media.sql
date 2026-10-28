@@ -260,3 +260,12 @@ WHERE orphaned_at IS NOT NULL;
 DELETE FROM media_object o
 WHERE o.id = $1
   AND NOT EXISTS (SELECT 1 FROM episode e WHERE e.video_object_id = o.id);
+
+-- name: ListMediaKeysForRewrap :many
+-- 运维命令 admintool rewrap-media-keys 用：按主键顺序列出全部内容密钥密文（KEK 轮换、本地数据导入线上后重新包装）。
+SELECT episode_id, key_ver, wrapped_key FROM media_key ORDER BY episode_id, key_ver;
+
+-- name: RewrapMediaKey :execrows
+-- 只在密文仍是读出时那一份时替换（乐观并发）：期间有人改过这一行就不动它，由调用方整批回滚。
+UPDATE media_key SET wrapped_key = @new_wrapped_key
+WHERE episode_id = @episode_id AND key_ver = @key_ver AND wrapped_key = @old_wrapped_key;

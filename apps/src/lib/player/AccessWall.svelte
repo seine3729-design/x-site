@@ -5,8 +5,15 @@
 	import Icon from '#lib/ui/Icon.svelte';
 	import type { Wall } from './controller.svelte.ts';
 
-	type Props = { wall: Wall; trialEnded: boolean; onretry: () => void; detailHref: string };
-	let { wall, trialEnded, onretry, detailHref }: Props = $props();
+	type Props = {
+		wall: Wall;
+		trialEnded: boolean;
+		onretry: () => void;
+		detailHref: string;
+		/** 登录墙上点了登录 / 注册（注册墙漏斗的「点注册」一步，W4-1） */
+		onauth?: (to: 'login' | 'register') => void;
+	};
+	let { wall, trialEnded, onretry, detailHref, onauth }: Props = $props();
 
 	const i18n = getI18n();
 	const next = $derived(encodeURIComponent(splitLocale(page.url.pathname).path + page.url.search));
@@ -20,8 +27,10 @@
 			<p class="text-lg font-bold">{i18n.t(trialEnded ? 'player.trialEndLogin' : 'player.loginTitle')}</p>
 			<p class="mt-2 text-sm leading-6 text-white/75">{i18n.t('player.loginDesc')}</p>
 			<div class="mt-6 flex w-full flex-col gap-3">
-				<a href={i18n.path(`/login?next=${next}`)} class="btn btn-primary w-full">{i18n.t('auth.login')}</a>
-				<a href={i18n.path(`/register?next=${next}`)} class="btn btn-glass w-full">{i18n.t('auth.registerFree')}</a>
+				<a href={i18n.path(`/login?next=${next}`)} class="btn btn-primary w-full" onclick={() => onauth?.('login')}>{i18n.t('auth.login')}</a>
+				<a href={i18n.path(`/register?next=${next}`)} class="btn btn-glass w-full" onclick={() => onauth?.('register')}>
+					{i18n.t('auth.registerFree')}
+				</a>
 			</div>
 		{:else if wall === 'vip'}
 			<span class="mb-4 grid size-14 place-items-center rounded-2xl bg-gradient-to-br from-[#f7d27a] to-[#e3a93a] text-on-vip">

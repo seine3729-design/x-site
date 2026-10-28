@@ -50,6 +50,13 @@ const BLOCKED = new Set([
 /** 写请求按需签发游客身份（评论等允许游客的写操作需要身份）；读请求不签发。 */
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
+/**
+ * 不需要身份的写请求：不为它们签发游客身份。埋点（W4-1）每个访客打开页面就会发，
+ * 若照写请求的默认规则处理，等于给每个首访访客都建一个游客账号、写一次会话 Cookie。
+ * 已有会话时照常带上令牌。
+ */
+const NO_GUEST = new Set(['/api/v1/events']);
+
 const TIMEOUT_MS = 10_000;
 
 function json(status: number, code: string, message: string, requestId: string) {
@@ -80,7 +87,7 @@ const proxy: RequestHandler = async (event) => {
 
 	const headers = serviceHeaders(ctx, incoming);
 	headers.set('x-bff-proxy', '1');
-	const access = await sessionAccessToken(ctx, cookies, { allowGuest: !SAFE_METHODS.has(method) });
+	const access = await sessionAccessToken(ctx, cookies, { allowGuest: !SAFE_METHODS.has(method) && !NO_GUEST.has(url.pathname) });
 	if (access) {
 		headers.set('authorization', `Bearer ${access}`);
 	}

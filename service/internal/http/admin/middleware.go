@@ -270,6 +270,12 @@ type AuditDetail struct {
 // SetAudit 由 handler 调用，补充本次写操作的审计内容。
 func SetAudit(c *gin.Context, d AuditDetail) { c.Set(ctxAudit, d) }
 
+const ctxAuditSkip = "admin_audit_skip"
+
+// SkipAudit 让本次写请求不记审计。只用于数据面的高频写入（视频分片：一个 4 GiB 文件约 820 片），
+// 它们所属的控制面操作（建会话、完成上传）仍各自记审计；业务状态变更一律不能用它。
+func SkipAudit(c *gin.Context) { c.Set(ctxAuditSkip, true) }
+
 // AuditRecorder 由 platform.AuditRecorder 实现。
 type AuditRecorder interface {
 	Record(e platform.AuditEntry)
@@ -285,6 +291,9 @@ func Audit(rec AuditRecorder) gin.HandlerFunc {
 		c.Next()
 
 		if s := c.Writer.Status(); s < http.StatusOK || s >= http.StatusMultipleChoices {
+			return
+		}
+		if c.GetBool(ctxAuditSkip) {
 			return
 		}
 		id, ok := CurrentAdmin(c)

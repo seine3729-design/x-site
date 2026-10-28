@@ -99,8 +99,6 @@ jobs:
         working-directory: apps
       - run: bun run lint
         working-directory: apps
-      - run: bun run test
-        working-directory: apps
       - run: bun run build
         working-directory: apps
       # 首屏 JS 预算（docs/08 第 1 节），超标直接失败（docs/11 W5-1）

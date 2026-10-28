@@ -30,6 +30,11 @@ export type SecureClientOptions = {
 export type SecureRequestInit = Omit<RequestInit, 'body'> & {
 	/** 请求体明文（JSON 字符串或字节）。 */
 	body?: string | Uint8Array;
+	/**
+	 * 加密做完、马上要发出请求时同步调用（重试时每次都调）。埋点用它判断一批事件是否已经交给浏览器：
+	 * keepalive 请求一旦发出，页面关掉也会送达，就不必再暂存到本机补发（#lib/analytics/track.ts）。
+	 */
+	onSend?: () => void;
 };
 
 /** 构造加密请求所需的 AAD：方法、请求目标（路径 + 查询串）与时间戳。 */
@@ -118,7 +123,7 @@ export function createSecureClient(options: SecureClientOptions = {}) {
 		return keyPromise;
 	}
 
-	async function attempt(url: URL, init: SecureRequestInit, plaintext: Bytes | null) {
+	async function attempt(url: URL, { onSend, ...init }: SecureRequestInit, plaintext: Bytes | null) {
 		const method = (init.method ?? 'GET').toUpperCase();
 		const ts = Math.floor((now() + clockOffsetMs) / 1000);
 		const sealed = await sealRequest(
@@ -135,6 +140,7 @@ export function createSecureClient(options: SecureClientOptions = {}) {
 			headers.set('content-type', ENC_CONTENT_TYPE);
 			headers.set('x-enc-type', 'application/json');
 		}
+		onSend?.();
 		const response = await doFetch(url, { ...init, method, headers, body: sealed.body ?? undefined });
 		return { response, responseKey: sealed.responseKey };
 	}

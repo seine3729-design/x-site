@@ -64,6 +64,11 @@ func eventNullID(p *int64) pgtype.Int8 {
 // 用 jsonb_typeof 守卫避免 null / 非数字值在 ::numeric 时报错。
 const watchSecondsExpr = `COALESCE(sum(floor((props->>'seconds')::numeric)) FILTER (WHERE event_type = 'watch' AND jsonb_typeof(props->'seconds') = 'number'), 0)::bigint`
 
+// regWallViewsExpr 是注册墙曝光数（注册墙漏斗「曝光 → 点注册 → 成功」的第一步，docs/04 C.6）：
+// register_wall 同时承载曝光与点击（props.step），这里只数 step=show（没带 step 的老数据按曝光算），
+// 并按「同设备同集」去重——汇总按天跑，所以就是文档要求的「同人同集同日去重」。
+const regWallViewsExpr = `count(DISTINCT device_id || ':' || COALESCE(episode_id, 0)::text) FILTER (WHERE event_type = 'register_wall' AND COALESCE(props->>'step', 'show') = 'show')`
+
 var (
 	metricDailySQL = `
 INSERT INTO metric_daily (day, uv, play_attempts, play_starts, play_errors, watch_seconds,
@@ -75,7 +80,7 @@ SELECT $1::date,
     count(*) FILTER (WHERE event_type = 'play_error'),
     ` + watchSecondsExpr + `,
     count(*) FILTER (WHERE event_type = 'register'),
-    count(*) FILTER (WHERE event_type = 'register_wall'),
+    ` + regWallViewsExpr + `,
     count(*) FILTER (WHERE event_type = 'ad_impression'),
     count(*) FILTER (WHERE event_type = 'ad_click'),
     now()

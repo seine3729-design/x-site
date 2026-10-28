@@ -49,14 +49,23 @@ export type ApiRequestOptions = {
 	headers?: HeadersInit;
 };
 
+/** 旧写法是把 AbortSignal 直接当第二个参数传（评论区、无限滚动、广告位仍在这么用） */
 type LegacyOrOptions = AbortSignal | ApiRequestOptions | undefined;
 
+/**
+ * 必须抽成类型谓词，不能把这两个条件直接写在 `if` 里：
+ * TypeScript 只对单一的 `instanceof` 做分支收窄，写成 `typeof … !== 'undefined' && input instanceof …`
+ * 之后，else 分支里 `input` 仍是联合类型，返回它就会报「AbortSignal 不能赋给 ApiRequestOptions」。
+ */
+function isAbortSignal(input: AbortSignal | ApiRequestOptions): input is AbortSignal {
+	return typeof AbortSignal !== 'undefined' && input instanceof AbortSignal;
+}
+
 function normalizeOptions(input: LegacyOrOptions): ApiRequestOptions {
-	if (!input) return {};
-	if (typeof AbortSignal !== 'undefined' && input instanceof AbortSignal) {
-		return { signal: input };
+	if (!input) {
+		return {};
 	}
-	return input;
+	return isAbortSignal(input) ? { signal: input } : input;
 }
 
 async function send<T>(method: string, path: string, body: unknown, options: ApiRequestOptions = {}): Promise<T> {

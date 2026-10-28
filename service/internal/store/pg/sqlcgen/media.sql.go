@@ -436,6 +436,37 @@ func (q *Queries) ListExpiredOrphanObjects(ctx context.Context, arg ListExpiredO
 	return items, nil
 }
 
+const listMediaKeysForRewrap = `-- name: ListMediaKeysForRewrap :many
+SELECT episode_id, key_ver, wrapped_key FROM media_key ORDER BY episode_id, key_ver
+`
+
+type ListMediaKeysForRewrapRow struct {
+	EpisodeID  int64
+	KeyVer     int32
+	WrappedKey []byte
+}
+
+// 运维命令 admintool rewrap-media-keys 用：按主键顺序列出全部内容密钥密文（KEK 轮换、本地数据导入线上后重新包装）。
+func (q *Queries) ListMediaKeysForRewrap(ctx context.Context) ([]ListMediaKeysForRewrapRow, error) {
+	rows, err := q.db.Query(ctx, listMediaKeysForRewrap)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListMediaKeysForRewrapRow{}
+	for rows.Next() {
+		var i ListMediaKeysForRewrapRow
+		if err := rows.Scan(&i.EpisodeID, &i.KeyVer, &i.WrappedKey); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listMediaObjectIDs = `-- name: ListMediaObjectIDs :many
 SELECT DISTINCT o.id
 FROM media_object o
@@ -865,6 +896,32 @@ type RequeueTranscodeJobParams struct {
 // 本次尝试失败、等待 River 重试：记录错误，状态回到 queued。
 func (q *Queries) RequeueTranscodeJob(ctx context.Context, arg RequeueTranscodeJobParams) (int64, error) {
 	result, err := q.db.Exec(ctx, requeueTranscodeJob, arg.Error, arg.SourceHash, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const rewrapMediaKey = `-- name: RewrapMediaKey :execrows
+UPDATE media_key SET wrapped_key = $1
+WHERE episode_id = $2 AND key_ver = $3 AND wrapped_key = $4
+`
+
+type RewrapMediaKeyParams struct {
+	NewWrappedKey []byte
+	EpisodeID     int64
+	KeyVer        int32
+	OldWrappedKey []byte
+}
+
+// 只在密文仍是读出时那一份时替换（乐观并发）：期间有人改过这一行就不动它，由调用方整批回滚。
+func (q *Queries) RewrapMediaKey(ctx context.Context, arg RewrapMediaKeyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, rewrapMediaKey,
+		arg.NewWrappedKey,
+		arg.EpisodeID,
+		arg.KeyVer,
+		arg.OldWrappedKey,
+	)
 	if err != nil {
 		return 0, err
 	}

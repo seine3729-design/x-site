@@ -121,8 +121,12 @@ func (r *Resolver) Stats() Stats {
 
 // Reload 在文件发生变化（mtime 或大小）时重新加载并原子替换，同时清空缓存。
 // 返回是否真的替换了。文件没变或加载失败时保留当前数据库 —— 宁可用旧数据，也不要因为一次坏文件失去解析能力。
+//
+// 刻意对 nil 接收者安全：没配 GEOIP_XDB_PATH 时 NewStorageResolver 返回 nil *Resolver，
+// 装配方会把它装进 jobs.GeoReloader 接口，那是「非 nil 接口里装着 nil 指针」，
+// 接口侧的 r == nil 守卫拦不住。少了这一条，周期任务每轮都在这里 panic。
 func (r *Resolver) Reload() (bool, error) {
-	if r.path == "" {
+	if r == nil || r.path == "" {
 		return false, nil
 	}
 	r.mu.Lock()

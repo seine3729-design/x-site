@@ -50,8 +50,9 @@ services:
   # ------------------------------------------------------------------ 一次性：产物上 R2
   # 和 apps 共用同一个镜像和同一段 build，所以上传的产物与正在运行的那一版是同一次构建的，
   # 内容哈希不可能对不上（两次独立构建对不上时，页面会去 CDN 取一个不存在的文件名，
-  # 而且只在生产复现）。只传 build/client/_app/immutable，不删远端旧对象 ——
+  # 而且只在生产复现）。immutable 产物不删远端旧对象 ——
   # 老页面还在引用的 chunk 要留着，清理靠 R2 的生命周期规则（apps/ 前缀 90 天）。
+  # immutable 全部成功后，上传脚本最后无条件覆盖 apps/_app/version.json，供 SvelteKit 版本轮询。
   assets:
     <<: [*apps-image, *logging]
     restart: 'no'
@@ -94,11 +95,10 @@ services:
       # 后端会把所有访客算成同一个来源，限流和风控全失效。
       ADDRESS_HEADER: x-forwarded-for
       # 从 x-forwarded-for 右数第几个地址是真实客户端。
-      #   2 = Cloudflare 橙云代理 + Traefik（链是「客户端, CF 边缘」，默认架构）
-      #   1 = 直连 Traefik，前面没有 Cloudflare
-      # 配小了每个页面请求直接 500（报错 `XFF_DEPTH is 2, but only found 1 addresses`），
-      # 配大了把边缘节点 IP 当成客户端。换 CDN 拓扑时第一件事就是核对这个值。
-      XFF_DEPTH: ${APPS_XFF_DEPTH:-2}
+      # 当前 Dokploy + Cloudflare 实测 Traefik 只向应用传 1 段客户端地址，所以默认取 1。
+      # 若以后代理链实际传入多段，再按收到的 X-Forwarded-For 从右数调整。
+      # 深度大于实际地址数会让每个页面直接 500；深度过小则可能把代理节点当成客户端。
+      XFF_DEPTH: ${APPS_XFF_DEPTH:-1}
 
       # ---------------------------------------------------------------- 后端
       # Go 后端的内网地址。service/docker-compose.yml 给自己挂了固定的网络别名 xsite-service，
@@ -118,6 +118,9 @@ services:
       # 否则封面和视频在生产被自己的 CSP 拦掉（apps/config/security-headers.ts）
       IMAGE_BASE_URLS: ${IMAGE_BASE_URLS:-https://cdn.duanju66.cc}
       MEDIA_CONNECT_ORIGINS: ${MEDIA_CONNECT_ORIGINS:-https://cdn.duanju66.cc}
+      # 图片按显示尺寸缩放（docs/08 第 5 节）：这些线路上的图经 duanju66.cc 自己的 /cdn-cgi/image/ 实时缩放。
+      # 前提是该 Cloudflare 区域开着 Images → Transformations（docs/14 第 4.2 节）；设成空串即关闭
+      IMAGE_RESIZE_ORIGINS: ${IMAGE_RESIZE_ORIGINS-https://cdn.duanju66.cc}
 
       # 注意：RATE_LIMIT_* 和 APP_ENV / CDN_ASSET_PREFIX 在这里设了也不生效 ——
       # scripts/with-env.ts 会用镜像里 .env.production（以及构建期写入的 .env.production.local）

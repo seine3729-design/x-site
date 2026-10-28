@@ -37,9 +37,13 @@
 	// favicon 由后台配（留空用内置图标）；爬虫与系统不执行 JS，这里用普通地址而不是 blob:（docs/04 C.8）
 	const icon = $derived(imageSources(data.site.favicon, data.site.imageBases)[0] ?? favicon);
 
+	/** 首访按浏览器语言跳到对应语言版本时，这一页不记埋点（跳过去之后再记） */
+	let redirecting = false;
+
 	onMount(() => {
 		const target = suggestedRedirect(location, navigator.languages, navigator.userAgent);
 		if (target) {
+			redirecting = true;
 			location.replace(target);
 			return;
 		}
@@ -47,22 +51,29 @@
 		void session.refresh();
 	});
 
-	// 客户端导航后把焦点交给主内容，读屏用户能听到新页面（WCAG 2.4.3）
-	afterNavigate(({ type }) => {
+	afterNavigate(({ type, to }) => {
+		// 客户端导航后把焦点交给主内容，读屏用户能听到新页面（WCAG 2.4.3）
 		if (type !== 'enter') {
 			document.getElementById('main')?.focus({ preventScroll: true });
+		}
+		// 埋点（W4-1，docs/04 C.10）：来访、浏览与 Web Vitals。埋点代码动态导入，不进首屏包。
+		// 路由模板取 page.route.id：首屏（enter）时 to.route.id 是 null，实测会让首屏的浏览丢掉路由
+		if (to && !redirecting) {
+			const route = page.route.id ?? to.route.id;
+			const { url } = to;
+			const { locale } = i18n;
+			void import('#lib/analytics/runtime.ts').then((analytics) => analytics.navigated(type, url, route, locale));
 		}
 	});
 </script>
 
 <svelte:head>
 	<link rel="icon" href={icon} />
-	{#if data.cdn}
-		<link rel="preconnect" href={data.cdn} crossorigin="" />
-	{/if}
-	{#each data.site.imageBases.slice(0, 1) as base (base)}
-		<link rel="preconnect" href={new URL(base).origin} crossorigin="" />
-	{/each}
+	<!--
+	  这里刻意不再写 preconnect：CDN 的 CORS 连接由 head 最前面那批 modulepreload 立刻建起来，
+	  图片缩放走同源；原来的两条（CDN 前缀、第一条图片线路）都指向同一个域名，
+	  Lighthouse 判定为「未使用的预连接」，而且连同 hooks 补的那条一共三条，超出了建议的数量。
+	-->
 	{#each LOCALES as locale (locale)}
 		<link rel="alternate" hreflang={locale} href={origin + localizePath(barePath, locale)} />
 	{/each}

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: x-site API
-  version: 0.82.0
+  version: 0.84.0
   description: |
     三端共用的接口契约（docs/07）。改接口必须先改本文件。
     路径前缀（docs/07 第 0.5 节）：前台（Web、APP）接口一律 /api/v1/*，运营后台接口一律 /api/admin/*，
@@ -488,6 +488,18 @@ info:
     试看时清单只含前 trial_sec 秒，播放器 video.duration 只有试看长度，进度条会误显示成试看秒数；
     前台据此把进度条总长显示为整集时长，可播区间只到 trial_sec、其余画成锁定段，拖动不越过可播边界。
     duration_sec 为 0 时前台回退到 video.duration（与改动前一致）。接口其余形状不变。
+    0.83.0（新增，S1-5a 后台视频分片并行上传，迁移 00055）：POST /api/admin/uploads 新增可选 multipart（只用于视频）；
+    AdminMediaUpload 新增 part_size / part_count（整段上传时都为 0）；新增 PUT /api/admin/uploads/{id}/parts/{number}。
+    整段 PUT 一个请求传完视频会撞上 Cloudflare 的请求体上限（Free / Pro 100 MB → 413）与 Traefik 的 60 秒读超时，
+    也只能用到一条「边缘 → 源站」连接；分片后每片 5 MiB 一个请求，浏览器 6 路并发，单片失败按退避重试。
+    complete 对分片会话先核对分片齐全再合并；缺片返回 400 且不改会话，补传后可再次完成。分片请求不单独记审计。
+    不声明 multipart 的旧页面仍走整段 PUT（向后兼容）；发布时先发 service、再发 admin。
+
+    0.84.0（变更，W4-1 前台埋点 SDK，docs/04 C.10，无迁移）：POST /api/v1/events 的事件类型白名单新增 web_vitals
+    （LCP / INP / CLS / FCP / TTFB，props: name、value、rating、nav、route）；各事件的触发时机与 props 以 docs/04 C.10
+    事件字典为准。Web 端不用 sendBeacon（带不了报文加密要的 X-Enc 头），改用加密客户端 + fetch keepalive；
+    BFF 透传这个接口时不再为没有会话的访客签发游客身份。汇总口径：metric_daily.reg_wall_views 只数
+    register_wall 的 step=show（没带 step 的按曝光算），同设备同集同日去重。接口形状不变。
 servers:
   - url: http://localhost:8080
     description: 本地开发（./dev.sh up）
@@ -3499,7 +3511,9 @@ paths:
         按 purpose 动态要求 dramas.edit、announcements.edit、ads.edit、fb_projects.edit 或 pages.edit。
         服务端按媒体类型选择后台「存储设置」中的图片或视频主存储，固定 provider_id 及 endpoint、region、bucket、path style、path_prefix 快照；同一 provider 后续配置变更只影响新会话，CDN/线路只用于后续读取分发。
         图片只能申请 WebP / AVIF，浏览器先压缩编码再上传；视频只支持 MP4、MOV、WebM、MKV，最大 4 GiB。
-        会话绑定当前管理员、服务端生成对象 key、15 分钟有效；图片目标为 img/<purpose>/，视频源目标为视频主存储的 video/source/，并在接收请求体时并行写入私有 ingest/ 暂存桶供转码读取。
+        会话绑定当前管理员、服务端生成对象 key、15 分钟有效；图片目标为主存储的 img/<purpose>/，视频源文件只写私有入库桶（MEDIA_SOURCE_BUCKET）的 ingest/，不写主存储。
+        视频声明 multipart: true 时按分片上传：响应的 part_size / part_count 给出切片方式，浏览器按片号逐片 PUT .../parts/{number}；
+        分片会话每收到一片就从当时起顺延 15 分钟，停传超时由清理任务放弃分片上传。
         记审计 media_upload.create。
       tags: [admin-content]
       security: [{ AdminSession: [] }]
@@ -3566,6 +3580,43 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
 
+  /api/admin/uploads/{id}/parts/{number}:
+    put:
+      summary: 上传视频的一片（分片并行上传）
+      description: |
+        仅接受本人、建会话时声明 multipart、处于 created / uploading 且未过期的视频会话。片号从 1 到 part_count；
+        Content-Length 必须等于该片应有的长度：除最后一片外都是 part_size，最后一片为余数。分片会话不接受整段 PUT .../content。
+        API 进程把这一片写入私有入库桶上同一次分片上传，不把存储凭据下发给浏览器；成功后会话为 uploading，并从此刻起顺延 15 分钟。
+        同一片可以重复提交（浏览器重试），以最后一次为准；5xx 与网络错误应按退避重试这一片，4xx 不必重试。
+        分片只是数据传输，不单独记审计（建会话与完成各记一条）。
+      tags: [admin-content]
+      security: [{ AdminSession: [] }]
+      parameters:
+        - $ref: "#/components/parameters/UploadID"
+        - name: number
+          in: path
+          required: true
+          description: 片号，从 1 开始
+          schema: { type: integer, minimum: 1, maximum: 10000 }
+        - $ref: "#/components/parameters/AdminOrigin"
+        - $ref: "#/components/parameters/CSRFToken"
+        - name: Content-Length
+          in: header
+          required: true
+          schema: { type: integer, format: int64, minimum: 1, maximum: 5242880 }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream: { schema: { type: string, format: binary } }
+      responses:
+        "200": { $ref: "#/components/responses/AdminMediaUploadPartResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+
   /api/admin/uploads/{id}/complete:
     post:
       summary: 完成后台媒体上传
@@ -3573,6 +3624,8 @@ paths:
         再次检查对象大小、Content-Type；图片额外检查 WebP / AVIF 文件头后直接 ready。
         视频只核对上传阶段已写入 ingest/ 暂存桶的对象元数据，不再搬运文件；更早版本留下的会话（源文件写在主存储）
         才退回复制一次，那种情况下的处理时间与文件大小成正比，调用方必须显式放宽超时（后台用 5 分钟），不能用默认的 15 秒。
+        分片会话（uploading）先核对入库桶已收到片号 1…part_count 且逐片长度正确，再合并成一个对象；
+        缺片时返回 400（提示缺哪几片）且不改会话，浏览器补传后可再次完成。
         分集视频提交既有受保护 HLS 转封装任务；广告视频进入 media 队列，完成后 output_key 为 video/assets/<upload_id>/master.m3u8。
         记审计 media_upload.complete。
       tags: [admin-content]
@@ -8852,7 +8905,8 @@ paths:
     post:
       summary: 埋点采集（批量上报）
       description: |
-        用户端 / APP 批量上报埋点事件（最多 50 条/次，Web 用 sendBeacon/keepalive，APP 用本地队列）。
+        用户端 / APP 批量上报埋点事件（最多 50 条/次；Web 用加密客户端 + fetch keepalive——sendBeacon 带不了
+        X-Enc 头；APP 用本地队列）。各事件的触发时机与 props 见 docs/04 C.10 事件字典。
         服务端校验后写入 event_raw 分区表：occurred_at 由服务端打时间戳（防客户端时钟作弊）；
         未知事件类型与序列化后超过 4KB 的 props 单条静默丢弃；超过每设备每分钟配额的请求整体静默丢弃。
         始终尽快返回 204、不回传数据。走 /api/v1 报文加密（dev 可明文联调）。
@@ -8878,7 +8932,7 @@ paths:
                         description: >
                           事件类型白名单：visitor / page_view / play_attempt / play_start / play_error /
                           play_stall / line_switch / watch / ad_impression / ad_click / register_wall /
-                          register / domain_switch / push_received / push_clicked；未知类型静默丢弃。
+                          register / domain_switch / web_vitals / push_received / push_clicked；未知类型静默丢弃。
                       drama_id: { type: ["integer", "null"], format: int64 }
                       episode_id: { type: ["integer", "null"], format: int64 }
                       props: { type: object, additionalProperties: true, description: 事件属性；序列化后 ≤ 4KB，超过则该条丢弃 }
@@ -9971,9 +10025,13 @@ components:
           description: 图片必填且必须与 mime 对应；视频留空
         size_bytes: { type: integer, format: int64, minimum: 1, maximum: 4294967296, description: 图片最大 15728640（15 MiB）；视频最大 4294967296（4 GiB） }
         episode_id: { type: integer, format: int64, minimum: 1, description: 仅 purpose=episode_video 必填 }
+        multipart:
+          type: boolean
+          default: false
+          description: 视频按分片并行上传（分片大小由服务端决定，见响应的 part_size）。图片传 true 返回 400；不传保持整段单次上传
     AdminMediaUpload:
       type: object
-      required: [id, provider_id, purpose, kind, mime, image_format, size_bytes, source_key, output_key, episode_id, transcode_job_id, status, progress, error, expires_at, created_at, updated_at]
+      required: [id, provider_id, purpose, kind, mime, image_format, size_bytes, source_key, output_key, episode_id, transcode_job_id, status, progress, error, expires_at, created_at, updated_at, part_size, part_count]
       properties:
         id: { type: string, format: uuid }
         provider_id: { type: integer, format: int64, description: 创建会话时固定的 storage_provider 编号；物理目标快照仅服务端使用 }
@@ -9992,6 +10050,15 @@ components:
         expires_at: { type: string, format: date-time }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+        part_size: { type: integer, format: int64, minimum: 0, description: 分片大小（字节，当前 5242880）；0 表示整段单次上传 }
+        part_count: { type: integer, minimum: 0, maximum: 10000, description: "分片总数；第 n 片覆盖 [(n-1)×part_size, min(n×part_size, size_bytes))，整段上传时为 0" }
+    AdminMediaUploadPart:
+      type: object
+      required: [id, part_number, size_bytes]
+      properties:
+        id: { type: string, format: uuid }
+        part_number: { type: integer, minimum: 1, maximum: 10000 }
+        size_bytes: { type: integer, format: int64, minimum: 1 }
     AdminMediaUploadContent:
       type: object
       required: [id, status]
@@ -13362,6 +13429,14 @@ components:
             allOf:
               - $ref: "#/components/schemas/Envelope"
               - { type: object, properties: { data: { $ref: "#/components/schemas/AdminMediaUpload" } } }
+    AdminMediaUploadPartResult:
+      description: 这一片已写入私有入库桶的分片上传
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Envelope"
+              - { type: object, properties: { data: { $ref: "#/components/schemas/AdminMediaUploadPart" } } }
     AdminMediaUploadContentResult:
       description: 二进制内容已流式写入对象存储
       content:

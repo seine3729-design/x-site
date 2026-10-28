@@ -7,6 +7,8 @@ const KEY = 'xs_did';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 let cached: string | null = null;
+/** 标识是这次打开页面时才生成的（本机以前没有） */
+let created = false;
 
 export function deviceId(): string | null {
 	if (cached) {
@@ -20,11 +22,22 @@ export function deviceId(): string | null {
 		if (!value || !UUID.test(value)) {
 			value = crypto.randomUUID();
 			localStorage.setItem(KEY, value);
+			created = true;
 		}
 		cached = value;
 	} catch {
 		// 隐私模式写不进去：本次会话内用内存里的标识
 		cached = crypto.randomUUID();
+		created = true;
 	}
 	return cached;
+}
+
+/**
+ * 本机是不是第一次来（标识是这次打开页面时才生成的；清过本机数据也算）。
+ * 埋点区分新老访客用（docs/04 C.10），不管页面上谁先取过标识，结果都一样。
+ */
+export function deviceIsNew(): boolean {
+	deviceId();
+	return created;
 }

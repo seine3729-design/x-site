@@ -226,6 +226,8 @@ services:
       # 不登记前台 CSP 会拦掉、图一张都不出（apps/config/security-headers.ts）
       IMAGE_BASE_URLS: ${IMAGE_BASE_URLS:-}
       MEDIA_CONNECT_ORIGINS: ${MEDIA_CONNECT_ORIGINS:-}
+      # 图片按显示尺寸缩放（docs/08 第 5 节），走站点 Cloudflare 区域的 /cdn-cgi/image/；留空不缩放
+      IMAGE_RESIZE_ORIGINS: ${IMAGE_RESIZE_ORIGINS:-}
     depends_on:
       service:
         condition: service_healthy

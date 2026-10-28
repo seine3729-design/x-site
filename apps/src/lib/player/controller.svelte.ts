@@ -9,6 +9,8 @@
  */
 import type Hls from 'hls.js';
 import type { ErrorData, Level } from 'hls.js';
+import { lazyPlaybackStats, type PlaybackHook } from '#lib/analytics/playback-lazy.ts';
+import type { PlayFailure, PlaySource } from '#lib/analytics/playback.ts';
 import type { EpisodeAccess, PlaybackLine, PlaybackSources } from '#lib/api/types.ts';
 import { attachSecureHls, PlaybackUnsupportedError } from './secure-hls.ts';
 
@@ -115,11 +117,25 @@ export class PlayerController {
 	/** 令牌过期重新选源的次数：开始播放后清零，连续两次仍被拒就停下来提示，不再无限重试 */
 	#tokenRetries = 0;
 	#onLineReport: ((event: LineReport) => void) | null = null;
+	/**
+	 * 埋点（W4-1）：传了 analytics 才有；只在各个时刻通知它，口径换算都在 #lib/analytics/playback.ts
+	 * （动态导入，不进首屏包，见 playback-lazy.ts）
+	 */
+	#stats: PlaybackHook | null = null;
 
-	constructor(options: { onLineReport?: (event: LineReport) => void; autoplay?: boolean; preloadBufferSec?: number } = {}) {
+	constructor(
+		options: {
+			onLineReport?: (event: LineReport) => void;
+			autoplay?: boolean;
+			preloadBufferSec?: number;
+			/** 开启播放埋点并标明来源：play 播放页、feed 刷剧流 */
+			analytics?: PlaySource;
+		} = {}
+	) {
 		this.#onLineReport = options.onLineReport ?? null;
 		this.autoplay = options.autoplay ?? true;
 		this.#bufferTarget = options.preloadBufferSec ?? 0;
+		this.#stats = options.analytics ? lazyPlaybackStats(options.analytics) : null;
 		this.#videoReady = new Promise((resolve) => {
 			this.#resolveVideo = resolve;
 		});
@@ -139,6 +155,7 @@ export class PlayerController {
 		};
 		const handlers: [keyof HTMLVideoElementEventMap, () => void][] = [
 			['timeupdate', sync],
+			['timeupdate', () => this.#stats?.('tick')],
 			['durationchange', sync],
 			['progress', sync],
 			['loadedmetadata', sync],
@@ -147,6 +164,7 @@ export class PlayerController {
 				this.waiting = false;
 				this.phase = 'playing';
 				this.#tokenRetries = 0;
+				this.#stats?.('playing', this.lines[this.lineIndex]?.line_id ?? 0);
 				if (this.#loadedAt > 0) {
 					const line = this.lines[this.lineIndex];
 					if (line) {
@@ -156,11 +174,15 @@ export class PlayerController {
 				}
 			}],
 			['pause', () => {
+				this.#stats?.('paused');
 				if (this.phase !== 'ended' && this.phase !== 'blocked') {
 					this.phase = 'paused';
 				}
 			}],
-			['waiting', () => (this.waiting = true)],
+			['waiting', () => {
+				this.waiting = true;
+				this.#stats?.('waiting', video.seeking);
+			}],
 			['canplay', () => (this.waiting = false)],
 			['volumechange', () => {
 				this.muted = video.muted;
@@ -190,8 +212,17 @@ export class PlayerController {
 		return this.#episodeId;
 	}
 
-	/** 播放某一集；startAt 为续播位置（秒） */
-	async load(episodeId: number, startAt = 0) {
+	/**
+	 * 播放某一集；startAt 为续播位置（秒）。context.dramaId 只用于埋点归属：
+	 * 播放页换到另一部剧时组件不重建，所以随每次 load 传入（不传沿用上一次的）。
+	 */
+	load(episodeId: number, startAt = 0, context: { dramaId?: number } = {}): Promise<void> {
+		this.#stats?.('load', { dramaId: context.dramaId, episodeId }, this.autoplay);
+		return this.#load(episodeId, startAt);
+	}
+
+	/** 选源并挂载。令牌过期后重新选源也走这里：那是同一次播放的延续，不算新的播放尝试 */
+	async #load(episodeId: number, startAt: number) {
 		if (episodeId !== this.#episodeId) {
 			this.#tokenRetries = 0;
 		}
@@ -210,7 +241,7 @@ export class PlayerController {
 		this.quality = -1;
 		this.destroyHls();
 
-		const sources = await this.#fetchSources(episodeId, manualLine());
+		const sources = await this.#fetchSources(episodeId, manualLine(), generation);
 		if (generation !== this.#generation || !sources) {
 			return;
 		}
@@ -219,18 +250,18 @@ export class PlayerController {
 		this.fullDuration = sources.duration_sec;
 		this.lines = sources.lines;
 		this.lineIndex = 0;
+		this.#stats?.('sourcesReady', sources.trial_sec > 0);
 		await this.#attach(generation);
 	}
 
-	async #fetchSources(episodeId: number, lineId: number | null): Promise<PlaybackSources | null> {
+	async #fetchSources(episodeId: number, lineId: number | null, generation: number): Promise<PlaybackSources | null> {
 		try {
 			const { api } = await import('#lib/api/client.ts');
 			const query = lineId ? `?line_id=${lineId}` : '';
 			return await api.get<PlaybackSources>(`/api/v1/episodes/${episodeId}/sources${query}`);
 		} catch (err) {
 			const { status, code } = errorStatus(err);
-			this.phase = 'blocked';
-			this.wall =
+			const wall: Wall =
 				status === 401 || code === 'NEED_LOGIN'
 					? 'login'
 					: status === 402 || code === 'NEED_VIP'
@@ -242,6 +273,12 @@ export class PlayerController {
 								: status === 503
 									? 'unavailable'
 									: 'error';
+			this.phase = 'blocked';
+			this.wall = wall;
+			// 埋点按墙区分：登录 / 会员墙、分集不可播放不算播放失败（见 playback.ts 的 blocked）
+			if (generation === this.#generation) {
+				this.#stats?.('blocked', wall, status);
+			}
 			return null;
 		}
 	}
@@ -254,7 +291,7 @@ export class PlayerController {
 		}
 		const line = this.lines[this.lineIndex];
 		if (!video || !line) {
-			this.#block('unavailable');
+			this.#block('unavailable', { reason: 'source', detail: 'no_line' });
 			return;
 		}
 		if (!this.#triedLines.includes(line.line_id)) {
@@ -302,7 +339,12 @@ export class PlayerController {
 			});
 			hls.on(HlsClass.Events.ERROR, (_event, data) => this.#onHlsError(data, generation, HlsClass));
 		} catch (err) {
-			this.#block(err instanceof PlaybackUnsupportedError ? 'unsupported' : 'error');
+			const unsupported = err instanceof PlaybackUnsupportedError;
+			this.#block(unsupported ? 'unsupported' : 'error', {
+				reason: unsupported ? 'decode' : 'network',
+				detail: unsupported ? 'unsupported' : 'attach',
+				lineId: line.line_id
+			});
 		}
 	}
 
@@ -330,9 +372,9 @@ export class PlayerController {
 		if (code === 401 || code === 403) {
 			if (this.#tokenRetries < 2) {
 				this.#tokenRetries += 1;
-				void this.load(this.#episodeId, resumeAt);
+				void this.#load(this.#episodeId, resumeAt);
 			} else {
-				this.#block('error');
+				this.#block('error', { reason: 'source', code, detail: data.details, lineId: line?.line_id });
 			}
 			return;
 		}
@@ -341,6 +383,7 @@ export class PlayerController {
 		if (data.type === HlsClass.ErrorTypes.NETWORK_ERROR && next >= 0) {
 			if (line) {
 				this.#onLineReport?.({ line_id: line.line_id, event: 'switch', to_line_id: this.lines[next]!.line_id });
+				this.#stats?.('lineSwitch', line.line_id, this.lines[next]!.line_id, true);
 			}
 			this.destroyHls();
 			this.lineIndex = next;
@@ -348,22 +391,35 @@ export class PlayerController {
 			void this.#attach(this.#generation);
 			return;
 		}
-		this.#block(data.type === HlsClass.ErrorTypes.NETWORK_ERROR ? 'unavailable' : 'error');
+		const network = data.type === HlsClass.ErrorTypes.NETWORK_ERROR;
+		this.#block(network ? 'unavailable' : 'error', {
+			reason: network ? 'network' : 'decode',
+			code: code || undefined,
+			detail: data.details,
+			lineId: line?.line_id
+		});
 	}
 
-	#block(wall: Wall) {
+	/** 显示错误墙；failure 是给埋点的失败原因（三分类见 #lib/analytics/playback.ts） */
+	#block(wall: Wall, failure?: PlayFailure) {
 		this.#wantsPlay = false;
 		this.destroyHls();
 		this.phase = 'blocked';
 		this.wall = wall;
+		if (failure) {
+			this.#stats?.('failed', failure);
+		}
 	}
 
 	#onEnded() {
+		this.#stats?.('ended');
 		// 试看清单只含前 trial_sec 秒：播到头就是试看结束，按分集权限显示登录墙或 VIP 墙
 		if (this.trialSec > 0) {
+			const wall = this.access === 'vip' ? 'vip' : 'login';
 			this.trialEnded = true;
 			this.phase = 'blocked';
-			this.wall = this.access === 'vip' ? 'vip' : 'login';
+			this.wall = wall;
+			this.#stats?.('wall', wall, true);
 			return;
 		}
 		this.phase = 'ended';
@@ -375,6 +431,7 @@ export class PlayerController {
 	 */
 	activate() {
 		this.autoplay = true;
+		this.#stats?.('intent');
 		const hls = this.#hls;
 		if (hls && this.#bufferTarget > 0) {
 			hls.config.maxBufferLength = matchMedia('(max-width: 1023px)').matches ? 15 : 30;
@@ -388,6 +445,7 @@ export class PlayerController {
 	deactivate() {
 		this.autoplay = false;
 		this.pause();
+		this.#stats?.('idle');
 	}
 
 	async play() {
@@ -429,6 +487,7 @@ export class PlayerController {
 			if (this.autoMuted) {
 				video.muted = false;
 			}
+			this.#stats?.('userPlay');
 			void this.play();
 		} else {
 			this.pause();
@@ -494,6 +553,7 @@ export class PlayerController {
 		const previous = this.lines[this.lineIndex];
 		if (previous) {
 			this.#onLineReport?.({ line_id: previous.line_id, event: 'switch', to_line_id: line.line_id });
+			this.#stats?.('lineSwitch', previous.line_id, line.line_id, false);
 		}
 		this.#startAt = this.#video?.currentTime ?? 0;
 		this.destroyHls();
@@ -502,9 +562,14 @@ export class PlayerController {
 		await this.#attach(++this.#generation);
 	}
 
-	/** 「刷新当前线路」：重新选源后从原位置续播 */
+	/** 「刷新当前线路」：重新选源后从原位置续播（用户主动重试，算一次新的播放尝试） */
 	retry() {
 		void this.load(this.#episodeId, this.#video?.currentTime || this.#startAt);
+	}
+
+	/** 播放埋点入口（没开 analytics 时为 null），给播放器界面上报注册墙点击等：stats?.('wallClick', 'register') */
+	get stats(): PlaybackHook | null {
+		return this.#stats;
 	}
 
 	destroyHls() {
@@ -514,6 +579,7 @@ export class PlayerController {
 
 	destroy() {
 		this.#generation += 1;
+		this.#stats?.('dispose');
 		this.destroyHls();
 		this.#video = null;
 	}

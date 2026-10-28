@@ -33,6 +33,12 @@
 		if (!ad) {
 			return;
 		}
+		// 两路上报口径相同：ads/event 给这条广告自己的曝光点击计数（后台广告列表），埋点给看板的广告板块。
+		// 广告位挂在根 layout（弹窗、浮窗），埋点模块动态导入，不进首屏包
+		const adId = ad.id;
+		void import('#lib/analytics/runtime.ts').then(({ track }) =>
+			track(kind === 'impression' ? 'ad_impression' : 'ad_click', { props: { ad_id: adId, slot } })
+		);
 		const { api } = await import('#lib/api/client.ts');
 		await api.post('/api/v1/ads/event', { ad_id: ad.id, kind }).catch(() => undefined);
 	}

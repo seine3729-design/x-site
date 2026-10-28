@@ -66,10 +66,17 @@ const adminUploadMaxBytes int64 = 4 << 30
 // 这里不 import 那个包：middleware 是底层包，反向依赖 handler 会形成循环。
 const adminImageOptimizeMaxBytes int64 = 25 << 20
 
+// adminUploadPartMaxBytes 是单个视频分片请求体的上限。只是外层闸门：handler 还会按会话推算出的
+// 片长逐字节核对（upload.VideoPartSize = 5 MiB），这里留余量是为了以后调大分片时不必同步改这一处。
+const adminUploadPartMaxBytes int64 = 64 << 20
+
 // 长请求的连接读写期限。
 const (
 	// uploadDeadline 覆盖「浏览器把文件传完 + 服务端写入对象存储 + 返回响应」整个过程。
 	uploadDeadline = 2 * time.Hour
+	// uploadPartDeadline 覆盖一个视频分片的同样过程。5 MiB 的分片按 10 KB/s 的极差网络也只要 9 分钟，
+	// 不需要整段上传那样的小时级期限；期限越短，被慢速连接占住的缓冲越早释放。
+	uploadPartDeadline = 15 * time.Minute
 	// streamDeadline 略大于 SSE 自己的单连接存活上限（10 分钟），让服务端主动收尾而不是被超时掐断。
 	streamDeadline = 15 * time.Minute
 	// externalDeadline 给「要等外部服务往返」的后台接口：图片优化要调两次外部 API，
@@ -87,6 +94,8 @@ func LongRequest() gin.HandlerFunc {
 		switch {
 		case isAdminUploadContent(c.Request), isAdminUploadComplete(c.Request):
 			extendDeadline(c, uploadDeadline)
+		case isAdminUploadPart(c.Request):
+			extendDeadline(c, uploadPartDeadline)
 		case isAdminImageOptimize(c.Request):
 			extendDeadline(c, externalDeadline)
 		case isEventStream(c.Request):
@@ -120,6 +129,8 @@ func BodyLimit(maxBytes int64) gin.HandlerFunc {
 			switch {
 			case isAdminUploadContent(c.Request):
 				limit = adminUploadMaxBytes
+			case isAdminUploadPart(c.Request):
+				limit = adminUploadPartMaxBytes
 			case isAdminImageOptimize(c.Request):
 				limit = adminImageOptimizeMaxBytes
 			}
@@ -131,6 +142,19 @@ func BodyLimit(maxBytes int64) gin.HandlerFunc {
 
 func isAdminUploadContent(r *http.Request) bool {
 	return r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/api/admin/uploads/") && strings.HasSuffix(r.URL.Path, "/content")
+}
+
+// isAdminUploadPart 识别视频分片请求：PUT /api/admin/uploads/:id/parts/:number。
+func isAdminUploadPart(r *http.Request) bool {
+	if r.Method != http.MethodPut {
+		return false
+	}
+	rest, ok := strings.CutPrefix(r.URL.Path, "/api/admin/uploads/")
+	if !ok {
+		return false
+	}
+	id, number, ok := strings.Cut(rest, "/parts/")
+	return ok && id != "" && !strings.Contains(id, "/") && number != "" && !strings.Contains(number, "/")
 }
 
 // isAdminUploadComplete 识别上传完成请求。它的请求体只有几十字节，但处理时间可能与文件大小成正比

@@ -1,20 +1,18 @@
 <script lang="ts">
 	import Poster from '#lib/drama/Poster.svelte';
-	import { titleHue } from '#lib/media/image.ts';
 
 	type Props = {
 		title: string;
-		/** 专题里前几部剧的竖版封面；为空时用按标题生成的渐变底 */
+		/** 专题里前几部剧的竖版封面；为空时和剧集封面占位同一种底色 */
 		covers?: string[];
 		priority?: boolean;
 	};
 	let { title, covers = [], priority = false }: Props = $props();
 
-	const hue = $derived(titleHue(title));
 	const shown = $derived(covers.slice(0, 3));
 </script>
 
-<!-- 专题配图：用专题里前三部剧的封面拼成三联，没有封面时退回按标题生成的稳定渐变（同一专题每次颜色一样） -->
+<!-- 专题配图：用专题里前三部剧的封面拼成三联（每张都走 Poster，加载中是统一骨架、无图是统一占位） -->
 <span class="absolute inset-0 block" aria-hidden="true">
 	{#if shown.length > 0}
 		<!-- 主图占三分之二，剩下两张在右侧上下排：比三张等宽并排少一道硬接缝，更像编辑拼贴 -->
@@ -33,11 +31,7 @@
 			{/if}
 		</span>
 	{:else}
-		<span
-			class="block h-full w-full"
-			style:background="radial-gradient(90% 120% at 100% 0%, hsl({hue} 70% 45% / 0.85), transparent 60%), linear-gradient(135deg, hsl({(hue +
-				200) %
-				360} 45% 20%), hsl({hue} 40% 12%))"
-		></span>
+		<!-- 一部剧都没有封面：铺同一种底色，不再按标题生成渐变（理由见 #lib/drama/Poster.svelte 的占位说明） -->
+		<span class="block h-full w-full bg-sunken"></span>
 	{/if}
 </span>

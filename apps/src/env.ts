@@ -116,5 +116,10 @@ export const variables = defineEnvVars({
 		description:
 			'视频切片线路域名池，逗号分隔，只用于生成生产环境 CSP 的 connect-src（docs/04 C.8、D 节）。hls.js 用 XHR 取切片，域名不在其中时生产环境放不出视频；内容是后台线路表里会用到的域名，新增线路后要同步这里',
 		schema: urlList
+	},
+	IMAGE_RESIZE_ORIGINS: {
+		description:
+			'图片线路里可以由站点所在 Cloudflare 区域经 /cdn-cgi/image/ 按显示尺寸实时缩放的域名，逗号分隔（docs/08 第 5 节）。留空不缩放（本地开发、没接 Cloudflare 的部署）。站点域名的区域必须开启 Images → Transformations',
+		schema: urlList
 	}
 });

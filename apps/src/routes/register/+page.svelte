@@ -60,6 +60,8 @@
 				return async ({ result, update }) => {
 					submitting = false;
 					if (result.type === 'redirect') {
+						// 表单动作只在注册成功时跳转（注册墙漏斗的最后一步，W4-1）；之后是站内跳转，页面不卸载
+						void import('#lib/analytics/runtime.ts').then((analytics) => analytics.trackRegistered());
 						await mergeLocalData();
 						await session.refresh(true);
 					}

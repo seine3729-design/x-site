@@ -85,7 +85,7 @@ apps/src/
 
 #### A.4.2 文案
 - 文案放 `src/lib/i18n/messages/<标签>.json`：扁平键（`模块.用途`，如 `home.intro`），占位符写 `{name}`；简体中文为基准。键名由 `zh-CN.json` 推导出的 TS 类型约束（`t('不存在的键')` 在 `svelte-check` 报错）。
-- 校验（单元测试 + 发布脚本 `bun run i18n:build`）：9 种语言键与中文一致、值非空、占位符一致、非中文不原样照抄中文。
+- 校验（发布脚本 `bun run i18n:build`）：9 种语言键与中文一致、值非空、占位符一致、非中文不原样照抄中文。
 - 用法：组件内 `const i18n = getI18n()`，`i18n.t('key', { name })`、`i18n.error(code)`（业务码 → 当前语言）、`i18n.path('/d/1')`（加语言前缀）。数字、日期、货币用 `Intl.*` 按当前语言格式化。
 - 每次请求只把当前语言的文案随 layout 数据下发（服务端打包全部语言，客户端包里不含其他语言）。
 - 后端 `message` 是中文兜底，界面不直接展示，一律 `i18n.error(code)`。
@@ -114,7 +114,6 @@ apps/src/
 - 播放令牌绑定选源时用的 `X-Device-Id`，所以 hls.js 取清单与密钥必须用同一个标识：用 `deviceSecureFetch` 而不是裸的 `secureApi.secureFetch`，否则后端按「不是签给本设备」返回 403。
 - 公钥首次使用时从 `/api/v1/crypto/keys` 取并缓存在内存；`ENC_KEY_UNKNOWN` 时重新取公钥、`ENC_TIME_SKEW` 时按响应 `Date` 校准时钟，各重试一次。
 - 加密响应不可被浏览器或 CDN 缓存（每个响应的密钥不同）；需要复用数据时在内存里缓存，或用 ETag 条件请求拿 304。
-- 联调：`./dev.sh run apps bun scripts/e2e-encryption.ts http://127.0.0.1:3001`（经 BFF 调本地 Go，检查密文、304、404 与响应头白名单）。
 
 ---
 
@@ -127,7 +126,7 @@ apps/src/
 - **全局浮层**：站点公告、年龄确认门、回到顶部、App 下载浮窗（播放页外）。
 - **初始化**：SSR 阶段由 BFF 确保游客 Cookie（无则调用 `POST /api/v1/auth/guest`）并在 layout load 中带回 `me.state`，首屏无需客户端再发两次请求。
 - **语言菜单**：页头右侧，列出 9 种语言（本族语名称），见 A.4。
-- **版本检测**：`/_app/version.json` 轮询（`kit.version.pollInterval`）；站点 `version` 变化后静默刷新数据。
+- **版本检测**：按 SvelteKit 的 assets 基址轮询 `_app/version.json`（`kit.version.pollInterval`）；使用独立 CDN 时发布任务在全部哈希产物成功后最后覆盖该固定对象，且 CDN 不对它做 immutable 长缓存。站点 `version` 变化后静默刷新数据。
 - **标题/面包屑映射**：首页、剧集详情、第 N 集、探索、频道、专题、搜索「词」、我的、消息、说明、回家的路、登录、注册、会员中心、我的订单。标题模板与各语言文案都在 i18n JSON 中。
 
 ### 1. 错误页
@@ -312,6 +311,7 @@ apps/src/
 - 位置：电脑端侧栏下半块在「选集 / 评论（N）」之间切换（侧栏已占满视口高度，两块并排会把选集挤得没法用）；手机端入口在右侧按钮列。
 - 版式（参考主流短视频评论区）：头像在左，昵称小号灰字在上、正文在下，时间与「回复 / 删除 / 举报」在正文下一行，点赞爱心单独在右侧一列（图标 + 计数竖排，触摸区 44px）；回复默认折起，显示「展开 N 条回复」；回复不单独插入输入框，而是把底部输入框的提示换成「回复 某人」，列表不会因此跳动。
 - 手机抽屉：`#lib/ui/Sheet.svelte`（分享面板共用），`fill` 时固定高度 76dvh，从底部滑上来、顶部抓手可下拉关闭、列表自己滚动（`overscroll-behavior: contain`）、输入框贴底并避开安全区。**高度必须写死**：内容是异步来的，内容驱动高度会让抽屉顶边一跳一跳。抓手是纯指针增强，不可聚焦、对读屏隐藏（键盘与读屏走关闭按钮与 Esc）——给它 `tabindex` 会让 `showModal()` 把焦点落在上面，全局 `:focus-visible` 的描边会铺成两条横线。
+- **抽屉的两个位移属性各管一段**：跟手下拉写在 `translate`（行内样式 + `transition`），进出场动画写在 `transform`（`sheet-up` / `sheet-down`），`will-change` 要把两个都列上，否则另一下拿不到提前提层的提示。**别图省事统一成一个属性**——进出场动画的 `animation-fill-mode` 是 `both`，动画结束后会继续接管那个属性，行内的拖拽位移被它盖掉（动画的层叠来源高于行内样式），下拉关闭就直接失效了。
 - 刷剧页 `/shua` 的评论入口在右侧按钮列（「赞」之后），抽屉按**当前在播的那一集**取评论；手机端另有顶部返回条（有来路退回去，直接进来的回首页）。
 - **游标坑**：列表接口的 `next_cursor` 没有 `omitempty`，**没有下一页时下发的是空字符串**而不是缺省。判断「还有下一页」一律用真假值（`#lib/comment/thread.ts` 的 `nextCursor`），写成 `!== undefined` 会让无限滚动把空游标当成还有下一页，而拼地址时空游标又被丢掉，于是反复重新请求第一页——实测短评论列表 4 秒内发了 59 次请求、评论区 DOM 变动 237 次，表现为「加载时一直抖」。同理，「结果为空就重试」不能作为取表情的条件（后台没配表情或命中 304 时结果恒为空，写回状态又把 effect 自己触发一遍）。
 - 实现偏差（W2-3）：列表接口是游标分页、没有总数，所以还有下一页时标题显示「评论（N+）」；后端没有取消点赞接口，点过即定住；列表接口不含待审内容，自己刚发的待审评论只在本次会话里回显；删除走 5 秒撤销提示而不是二次确认弹窗（与「清空历史」一致，接口没有还原）。
@@ -329,13 +329,15 @@ apps/src/
 
 ### C.6 账号/游客/注册墙
 - 登录弹窗/注册墙三好处：进度跨设备同步、追更提醒、游客记录自动并入。
-- 注册墙漏斗曝光→点注册→成功（同人同集同日去重）。
+- 注册墙漏斗曝光→点注册→成功（同人同集同日去重）：曝光与点击是 `register_wall` 的 `step=show` / `click`，成功是 `register`（点过墙的归到那一集），见 C.10；汇总只数曝光并按同设备同集同日去重。
 
 ### C.7 分享与海报
 - 分享面板：复制链接、系统分享（`navigator.share`）、生成海报。
 - 海报：Canvas 画「剧名 第N集」+ 二维码，可下载；二维码库按需加载。
-- 实现（W3-3 的分享部分）：`#lib/share/SharePanel.svelte` 由 `#lib/drama/DramaActions.svelte` 的分享按钮打开，**电脑是居中弹窗、手机是从底部滑上来的抽屉**（同一个 `#lib/ui/Sheet.svelte`，`center` 控制电脑端形态）。面板内容：海报预览（9:16 固定占位，画好再淡入）、下载海报、复制链接、更多分享。海报在面板打开后才画，二维码模块与 Canvas 都不进首屏。
-- **二维码不引三方库**：`#lib/share/qr.ts` 是仓库内的最小编码器（Model 2、字节模式、等级 M、版本 1–10，上限 213 字节），照 `#lib/ui/icons.ts` 的做法把需要的表放进仓库，`apps` 保持零运行时依赖。正确性由 `qr.test.ts` 与「用 Chrome 的 `BarcodeDetector` 回读原文」的浏览器实测保证。
+- 实现（W3-3 的分享部分）：`#lib/share/SharePanel.svelte` 由 `#lib/drama/DramaActions.svelte` 的分享按钮打开，**电脑是居中弹窗、手机是从底部滑上来的抽屉**（同一个 `#lib/ui/Sheet.svelte`，`center` 控制电脑端形态）。面板内容：海报预览（9:16 固定占位，画好再淡入）、下载海报、复制链接、更多分享。海报在面板打开后才画。
+- **抽屉滑入期间不显示转圈**：抽屉滑上来要 300ms，而封面已在本机缓存时海报只要几十毫秒就画好。原先一打开就挂转圈，于是它在滑动途中出现又消失（实测可见约 26–48ms），表现为「滑出之后闪一下」。现在转圈延迟 300ms 登场（`SPINNER_DELAY_MS`，画完即撤计时器）：常见情况下它一帧都不亮，预览区从底色直接淡入海报（实测滑入全程 0 帧占位、不透明度单调递增）；封面真要现解码时（注入 900ms 延迟实测）转圈在抽屉停稳后 +311ms 才出现并持续 617ms，长等待仍有反馈。预览容器的 `aria-busy` 始终如实反映绘制中状态，读屏不受转圈延迟影响。对应 ui-ux `loading-indicators`：不要为近乎瞬时的工作闪现指示器。
+- **海报代码目前仍进详情页初始包**：`SharePanel` 里的 `import('./poster.ts')` 本意是按需加载，但同一文件的 `POSTER_WIDTH` / `POSTER_HEIGHT` / `posterFileName` 是静态导入的，Rollup 于是把 `drawPoster` 与二维码编码器并进了 `SharePanel` 所在的 chunk——实测产物 `chunks/Bi1BXUlU.js`（16.7KB，br 6.1KB）被 3 个路由节点以 `from"…"` 静态引用，`nodes/` 里没有任何动态 `import()`。要真正分包，得把尺寸常量与文件名函数挪到不依赖 Canvas / `qr.ts` 的小模块里。
+- **二维码不引三方库**：`#lib/share/qr.ts` 是仓库内的最小编码器（Model 2、字节模式、等级 M、版本 1–10，上限 213 字节），照 `#lib/ui/icons.ts` 的做法把需要的表放进仓库，`apps` 保持零运行时依赖。改动二维码编码逻辑后，需用 Chrome 的 `BarcodeDetector` 回读原文验收。
 - 版面坐标写死在 `#lib/share/poster.ts` 顶部（720×1280）：封面卡片 2:3、剧名在二维码上方用整幅宽、扫码提示与地址排在二维码左侧。**改任何一块都要重算后面的块**——封面原先按整幅宽算高（912px），下方只剩 236px，扫码提示直接压在剧名上。
 - 海报底色取当前主题的 `--brand` / `--canvas` / `--fg`，后台换配色海报跟着变；封面取不到时按剧名画稳定渐变 + 首字（与列表占位一致）。
 - 「生成海报」受 `features.share_poster` 控制，关掉时面板只剩复制链接与系统分享。
@@ -343,14 +345,17 @@ apps/src/
 
 ### C.8 通知 / 主题 / 公告 / 卡片
 - 主题：浅/深色切换；色板、头部样式、卡片标题位置、底栏、Logo 由后台配，作为 CSS 变量在 SSR 时写入 `<html>`，避免闪烁。实现（W0-6，`docs/specs/W0-6.md`）：
-  - **令牌推导**：后台只配六个种子色（主色/强调色/页面背景/卡片背景/正文/次要文字），`#lib/theme/tokens.ts` 推导出界面用的 18 个令牌（四档背景、三档文字、两档描边、品牌三态 + 品牌上的文字色、会员两态）。运营直接填的色值原样使用；推导出来的保证 WCAG AA（正文 4.5:1、次要文字 3:1，品牌/会员底色上的文字自动在黑白里挑），由 `tokens.test.ts` 逐个预设 × 深浅色校验。预设的种子色与后台预览用的那份（`admin/.../branding-utils.ts`）同名同值。
+  - **令牌推导**：后台只配六个种子色（主色/强调色/页面背景/卡片背景/正文/次要文字），`#lib/theme/tokens.ts` 推导出界面用的 18 个令牌（四档背景、三档文字、两档描边、品牌三态 + 品牌上的文字色、会员两态）。运营直接填的色值原样使用；推导出的令牌需保持 WCAG AA（正文 4.5:1、次要文字 3:1，品牌/会员底色上的文字自动在黑白里挑）。预设的种子色与后台预览用的那份（`admin/.../branding-utils.ts`）同名同值。
   - **注入**：`hooks.server.ts` 在 SSR 时把**两套**配色写进 `<html style>`——深色 `--d-*`、浅色 `--l-*`，另带 `--card-radius`、`--cover-ratio`、字体前缀 `--app-font-prefix`、关掉手机底栏时的 `--tabbar-h: 0rem`。`app.css` 里每个令牌都是 `var(--d-x, 内置值)`，后端不可用时自动落到内置经典红色板。两套同时在，深浅色切换只是加减 `<html class="light">`，不闪也不用再请求。
   - **深浅色**：SSR 按后台的默认深浅色给出 `class` 与 `data-scheme`（`system` 按深色出），`app.html` 里的同步内联脚本在首帧前按本机 `xs_theme` 偏好与 `prefers-color-scheme` 校正；后台关掉「允许访客切换」时注入 `data-scheme-lock`，脚本忽略本机偏好、页头也不渲染切换按钮。地址栏 `theme-color` 取当前配色的 `--d-canvas` / `--l-canvas`。SSR 输出只依赖后台配置、与 Cookie 无关，页面仍可进边缘缓存。
   - **组件消费**：封面比例 → `aspect-cover` 与 `Poster` 的占位宽高；圆角 → `rounded-card`；页头样式 → 经典 / 居中（三栏网格）/ 胶囊（悬浮圆角条）；卡片标题位置 → 标题在封面下或压在渐变遮罩上（骨架同步省掉下方两行）；底栏开关、Logo / favicon / 版权文字同样来自后台。`play_mode` 已随站点配置下发（`SiteData.layout.playMode`），播放页接入见 W1-3 / W1-5。
 - 剧卡：封面、角标、集数状态、播放次数、评分、「看到第 N 集」。
 - 空态 `#lib/ui/EmptyState.svelte`、骨架 `#lib/ui/Skeletons.svelte`（grid / rail / list，尺寸与真实卡片一致）、区块级错误边界 `#lib/ui/Boundary.svelte`（`<svelte:boundary>` + 可重试提示 + 控制台日志，`silent` 时不占位）。
-- 图片（封面、海报、头像、广告图）统一用 `#lib/media/BlobImage.svelte`：`fetch` 取回后转临时 `blob:` 地址显示，**不加密**，组件销毁时释放地址。固定宽高比占位（CLS）；首屏前 4 张 `priority`（立即、高优先级加载），其余进入可视区 300px 内才加载；支持多条图片线路依次回退；只接受 `image/*`（不接受 SVG）。
-- 图片线路须对站点域名返回 CORS 头，CSP `connect-src` 包含图片域名；首屏大图可在 `<head>` 加 `<link rel="preload" as="fetch" crossorigin>` 抵消 JS 执行前不能开始下载的延迟。OG 分享图、favicon、PWA 图标仍用普通地址（爬虫与系统不执行 JS）。
+- 图片（封面、海报、头像、广告图）统一用 `#lib/media/BlobImage.svelte`：`fetch` 取回后转临时 `blob:` 地址显示，**不加密**，组件销毁时释放地址。默认固定宽高比占位（CLS）；页头自定义 Logo 固定高 32px、按原图比例自适应宽度；首屏前 4 张 `priority`（高优先级），其余进入可视区 300px 内才加载、低优先级；`display:none` 的不加载（如手机上电脑端专用的那张）；支持多条图片线路依次回退；只接受 `image/*`（不接受 SVG）。
+  - **按显示尺寸缩放**（`08` 第 5 节）：在交叉回调里拿到排版后的尺寸（不强制重排），宽 × 像素比取到 `#lib/media/image.ts` 的档位，先请求同源的 `/cdn-cgi/image/width=W,…,format=webp/<原图>`，失败再按线路试原图。缩放入口返回非 2xx（站点挂在没接 Cloudflare 的域名上时是 404，`hooks.server.ts` 对 `/cdn-cgi/*` 直接回 404）后本页停用缩放。只缩放 `IMAGE_RESIZE_ORIGINS` 登记的线路。`blurred`（模糊氛围底图，如精选卡、详情页背景）只取最小一档。
+  - 同一地址的并发请求合并、最近 48 张复用（`imageCache`）；首页有轮播首图时，其余图片等它画出来再下载（`#lib/media/lead.ts`）。
+- **首页轮播首图是唯一的例外**（LCP 元素）：SSR 直接输出 `<picture>` + `fetchpriority="high"`（手机竖封面、电脑横封面按 `media` 二选一），`<head>` 里放同参数的 `<link rel="preload" as="image" imagesrcset>`；它的地址（含 CDN 原图地址）会出现在 DOM 里。缩放入口失败时退回原图，原图也失败只留渐变占位。水合等它画出来再开始（最多 800 ms，`src/hooks.client.ts`）。
+- 图片线路须对站点域名返回 CORS 头（缩放失败回退原图时要用），CSP `connect-src` / `img-src` 包含图片域名（缩放地址同源，`'self'` 已覆盖）。OG 分享图、favicon、PWA 图标仍用普通地址（爬虫与系统不执行 JS）。
 
 ### C.9 剧集角标
 
@@ -362,6 +367,43 @@ apps/src/
 - 三档尺寸：`sm` 海报角标、`md` 列表与详情、`lg` 首页轮播；`corner` 形态贴在海报左上角，外角用 `rounded-ss-card`，跟后台配的卡片圆角一致。
 - 老数据兼容：早期手填的「热播」「独播」「HOT」等写法由 `resolveBadge` 的同义词表归到对应预设，不用改库；后台下拉同样认这些写法，再保存时写成预设 id。
 - 渲染位置：剧卡 `DramaCard`、首页轮播 `HeroCarousel`、精选大卡 `FeatureCards`、搜索页热门影片 `HotDramaList`、剧详情页。排行榜轨道 `RankRail` 只放名次，不放角标。
+
+### C.10 埋点 SDK（W4-1）
+
+数据看板、剧集分析的数据全部来自这里（`POST /api/v1/events` → `event_raw` → 每小时汇总进 `metric_*`，`03` 第 8 节）。看板与剧集分析的窗口到「昨天」为止，**今天上报的数据明天才出现在后台页面上**。
+
+**发送**（`#lib/analytics/`：`track.ts` 入口、`queue.ts` 攒批、`outbox.ts` 关页暂存）
+- **埋点代码不进首屏包**：页面与组件一律 `import('#lib/analytics/runtime.ts')` 动态导入这一个入口（根 layout 的 `afterNavigate`、广告位、注册页、回家的路），播放器内核静态引用的只有一个很小的外壳 `playback-lazy.ts`：模块加载完之前的调用连同发生时刻、页面是否可见一起记下，加载后按原时刻重放，首帧耗时与观看时长不受加载快慢影响。只有一个入口，打包器就不会在首屏里另拆零碎的辅助文件（实测拆过一次私有字段辅助函数、一次命名空间辅助函数，各多一个首屏请求）。`playback.ts` 用 TS 的 `private` 而不是 `#` 私有字段，原因相同。
+- 调用 `track(type, { drama_id?, episode_id?, props? })`；服务端渲染时什么都不做。
+- 攒批：第一条入队后等 2 秒、攒满 20 条、页面隐藏（`visibilitychange` / `pagehide`）时发送；单批 ≤ 50 条；断网与 5xx 最多重试 3 次，4xx 直接丢；队列上限 300 条，满了丢最旧的。页面已隐藏时才入队的事件（结算的观看、CLS / INP）立即发。
+- 走报文加密：加密客户端 + 设备标识（`X-Device-Id`，UV 与剧集观看人数都按它去重）+ `fetch` 的 `keepalive`。**不用 `sendBeacon`**：它带不了 `X-Enc` 头。
+- **关页不丢、不重**：加密是异步的，页面被卸载时不一定来得及做完（实测整页跳走时做不完，关标签页时有时做得完）。所以页面一隐藏，就把还没交给浏览器的事件同步写进 `localStorage`（键 `xs_evq:<本页随机串>`，每个页面一个键，只存事件本身）；加密客户端在请求发出前同步回调 `onSend`，这一批随即从暂存里拿掉（`keepalive` 请求页面关掉也会送达）；页面回到前台时暂存作废。真没发出去的，下一次打开本站（同一台设备 10 分钟内）时补发，超过 10 分钟的丢掉——服务端按收到的时间记事件，隔太久补会记到错误的时段。例外：整页跳走后页面进了往返缓存（`pagehide.persisted`）时不暂存，避免「后退」恢复后与补发重复；这种页面被浏览器清掉时，还没发出去的会丢。实测（关掉往返缓存的无头 Chrome）：暂停后 0.5 秒整页跳走、直接关掉正在播放的标签页，观看与 CLS / LCP 各到一条，不丢不重。
+- BFF 透传 `/api/v1/events` 时不为没有会话的访客签发游客身份（其他写请求会签发），否则每个首访访客都会被建一个游客账号。
+- 首屏体积（`bun run budget`，同一份代码去掉本功能做基线对比）：普通页面 +0.2 KB（br），播放页与刷剧页 +0.7 KB。播放页（94.0 → 94.7 KB）与刷剧页（90.0 → 90.7 KB）基线就已达到或超过 90 KB 预算，要在 W5-1 里先给这两页减重。
+
+**事件字典**（类型与后端白名单一一对应；`props` 只放标量，不记查询串、完整来源地址等任何用户输入）
+
+| 事件 | 触发 | 剧 / 集 | `props` |
+| --- | --- | --- | --- |
+| `visitor` | 每个标签页会话一次（sessionStorage 记标记），根 layout 首屏时 | — | `new`（本机设备标识是这次打开页面时才生成的：第一次来或清过本机数据）、`ch`（`utm_source`，没有取 `ch`，只收 ≤40 位字母数字）、`ref`（外站来源域名）、`entry`（落地页路由模板）、`device`（mobile / desktop，1024px 为界）、`lang` |
+| `page_view` | 每次路由切换（含首屏） | — | `route`（路由模板，如 `/play/[id]/[n]`）、`path`（去掉语言前缀，不带查询串，≤200） |
+| `play_attempt` | 有播放意图（自动起播、刷剧滑到这一条、点播放）且选源成功；选源因技术原因失败也计一次。登录 / 会员墙、分集不可播放（404）不算 | ✓ | `src`（play 播放页 / feed 刷剧）、`trial` |
+| `play_start` | 本集第一次出画面 | ✓ | `ms`（首帧耗时，从播放意图起算）、`line_id` |
+| `play_error` | 致命失败（之后显示错误墙） | ✓ | `reason` 三分类：`source`（选源与播放令牌）/ `network`（清单、切片、密钥加载）/ `decode`（解码与浏览器不支持）；`stage`（pre 起播前 / post 起播后中断）、`code`、`detail`、`line_id` |
+| `play_stall` | 起播后、不是拖进度引起的缓冲，恢复播放时 | ✓ | `ms`、`line_id` |
+| `line_switch` | 换线路 | ✓ | `from`、`to`、`auto`（故障自动换 / 用户手选） |
+| `watch` | 每集累计实看满 10 秒才开始报（连前面的秒数一起），之后在暂停、播完、换集、滑走、页面隐藏时结算，连续播放每满 30 秒先报一段 | ✓ | `seconds`、`src` |
+| `ad_impression` / `ad_click` | 广告 ≥50% 可见且 ≥1 秒 / 点击（与 `/api/v1/ads/event` 同时报，那边是广告自己的计数） | — | `ad_id`、`slot` |
+| `register_wall` | 播放器登录墙出现（`step=show`，`src` 为 locked 直接被拦 / trial_end 试看到头）；墙上点登录或注册（`step=click`，`to`） | ✓ | `step`、`src`、`to` |
+| `register` | 注册成功（注册页表单动作返回跳转时） | 来自墙时 ✓ | `from`（30 分钟内在本标签页点过注册墙为 wall，否则 direct） |
+| `domain_switch` | 在回家的路点开某个地址 | — | `from`、`to`（域名）、`reason`（way_home）、`probe`（当时的探活结果） |
+| `web_vitals` | 每个指标每次页面生命周期一次（web-vitals 库，空闲时加载） | — | `name`（LCP / INP / CLS / FCP / TTFB）、`value`（毫秒取整，CLS 保留 4 位小数）、`rating`、`nav`、`route`（落地页路由模板） |
+
+**口径要点**
+- 播放尝试结果三分类由汇总推导：成功 = `play_start`，失败 = `stage=pre` 的 `play_error`，其余为起播前流失。
+- 观看只累计「真在播且页面可见」的墙钟时间：倍速不放大、缓冲等待与后台播放都不算。
+- 刷剧流预加载上下两条，**没有播放意图之前不发任何带剧集编号的事件**（剧集观看人数按「该剧有过任一事件的设备」去重，预加载会虚增它）；预加载时遇到的失败与登录墙等滑到这一条再报。滑走时还没出画面算一次起播前流失，滑回来重新计一次尝试。
+- 实现分工：播放器内核（`#lib/player/controller.svelte.ts`，构造时传 `analytics: 'play' | 'feed'`）在各个时刻经 `playback-lazy.ts` 通知 `#lib/analytics/playback.ts` 的 `PlaybackStats`，口径换算全在后者；`load()` 的第三个参数传 `dramaId`（播放页换剧时组件不重建，不传沿用上一次的）。选源被拒时按墙区分：登录墙记一次注册墙曝光，会员墙与分集不可播放（404）不计入播放尝试与失败。来访、浏览与 Web Vitals 在根 layout 的 `afterNavigate`（`visit.ts` 的 `navigated`），注册归因在 `funnel.ts`。
 
 ---
 
@@ -393,8 +435,8 @@ apps/src/
 ## E. 性能要点（详见 `08`）
 
 - 首屏预算：HTML ≤ 50 KB（br），首屏 JS ≤ 90 KB（br），LCP ≤ 2.0s（4G 移动端 P75），CLS ≤ 0.05，INP ≤ 200ms。
-- `inlineStyleThreshold` 内联小样式；`modulepreload` 由 SvelteKit 自动生成；第三方脚本（统计、广告）`defer` 且在 `requestIdleCallback` 后加载。
-- 图片走 CDN 实时裁剪（`?w=&q=&fmt=avif`），`srcset` 输出 2–3 档。
+- 样式整份内联进 HTML（`inlineStyleThreshold: 160_000`，主样式表约 104 KB / br 约 14 KB），首屏没有渲染阻塞请求；`modulepreload` 由 SvelteKit 自动生成；整页只有一条 preconnect（`hooks.server.ts`）；第三方脚本（统计、广告）`defer` 且在 `requestIdleCallback` 后加载。
+- 图片经站点 Cloudflare 区域的 `/cdn-cgi/image/` 按显示尺寸实时缩放（同源，见 C.8 与 `08` 第 5 节）；首页轮播首图输出 `srcset`（手机 360/540/720/1080，电脑 720/1080/1440/1920），其余由 `BlobImage` 按实测尺寸挑一档。
 - SSR 页面缓存：首页/列表 `s-maxage=60, stale-while-revalidate=300`；详情 `s-maxage=120`；个人页 `private, no-store`。缓存键不含登录态，个性化数据（追剧状态、续播）由客户端二次请求填充。实现：`hooks.server.ts` 按路由 ID 查 `#lib/server/cache-policy.ts` 的登记表写 `Cache-Control`（浏览器 `max-age=0`，只让 CDN 缓存）；未登记的路由、非 200、写 Cookie 的响应一律 `private, no-store`，新增公共页面要在表中登记；load 里用 `setHeaders` 自定的不覆盖；客户端导航的 `__data.json` 由 SvelteKit 固定为 `no-store`。
 - 源站动态压缩（未经 CDN 的流量）：`#lib/server/compress.ts` 用 `node:zlib` 流式压缩（Brotli 质量 5 / gzip），在线程池执行、不缓冲整页，不阻塞事件循环也不打断流式 SSR；静态资源由 adapter 预压缩。
 - 首屏体积检查：`bun run build` 后执行 `bun run budget`，按 SvelteKit 构建清单统计每个页面首次访问要加载的 JS（br）与内联样式，超过 90 KB 时失败（CI 接入随 X0-3）。
@@ -412,7 +454,7 @@ apps/src/
 - 浏览器 `/api/v1/*` 请求报文加密（A.5），BFF 不接触明文；加密只提高抓包和批量抓取的成本，鉴权仍由会话与限流保证。
 - 富文本（静态页）由后端清洗后输出；前端**不用 `{@html}` + DOMPurify，改为与自定义 HTML 区块同一套沙箱 iframe**（`#lib/home/SandboxHtml.svelte`，`sandbox="allow-scripts"`、不加 `allow-same-origin`，高度由 iframe 内 `postMessage` 回传，配色读外层 CSS 变量）。好处是不引入新依赖、SSR 不需要 jsdom，隔离强度也比在主文档里清洗更高。唯一仍用 `{@html}` 的地方是 JSON-LD（内容是转义后的 JSON，带 eslint 豁免说明）。
 - 关键第三方资源加 SRI；统计代码仅超管可配，且受 CSP 约束。
-- 不在 `localStorage` 存任何令牌；本机记录（搜索历史、手选线路）不含身份信息。
+- 不在 `localStorage` 存任何令牌；本机记录（搜索历史、手选线路、关页时没发出去的埋点暂存）不含身份信息。
 
 ---
 

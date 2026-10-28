@@ -23,24 +23,26 @@ const (
 	maxISPLen     = 32
 )
 
-// 事件类型白名单（docs/03 第 8.1 节）。未在表内的类型按脏数据静默丢弃，不扩散到汇总。
+// 事件类型白名单（docs/03 第 8.1 节；各事件的触发时机与 props 见 docs/04 C.10 事件字典）。
+// 未在表内的类型按脏数据静默丢弃，不扩散到汇总。
 // 用集合而非 CHECK 约束：埋点类型会随前台迭代增删，改一处白名单比改迁移轻。
 var allowedTypes = map[string]bool{
-	"visitor":       true, // 访客到访
-	"page_view":     true, // 页面浏览
-	"play_attempt":  true, // 播放尝试（props: first_frame_ms/result/line_id/cdn）
-	"play_start":    true, // 起播成功（出画面）
-	"play_error":    true, // 播放失败（props: reason 三分类）
-	"play_stall":    true, // 卡顿（props: stall_ms）
-	"line_switch":   true, // 换线
-	"watch":         true, // 观看秒数（props: seconds，≥10s 才算有效，由汇总判定）
-	"ad_impression": true, // 广告曝光
-	"ad_click":      true, // 广告点击
-	"register_wall": true, // 注册墙曝光 / 点击（props: step）
-	"register":      true, // 注册成功
+	"visitor":       true, // 访客到访（每个标签页会话一次；props: new/ch/ref/entry/device/lang）
+	"page_view":     true, // 页面浏览（props: route/path）
+	"play_attempt":  true, // 播放尝试：有播放意图且选源成功（或选源技术失败）时计一次（props: src/trial）
+	"play_start":    true, // 起播成功（出画面；props: ms 首帧耗时、line_id）
+	"play_error":    true, // 播放失败（props: reason 三分类 source/network/decode、stage pre/post、code、line_id）
+	"play_stall":    true, // 起播后卡顿（props: ms、line_id）
+	"line_switch":   true, // 换线（props: from/to/auto）
+	"watch":         true, // 观看秒数（props: seconds；客户端按每集累计实看满 10 秒才开始上报，之前的秒数一并补上）
+	"ad_impression": true, // 广告曝光（props: ad_id/slot）
+	"ad_click":      true, // 广告点击（props: ad_id/slot）
+	"register_wall": true, // 注册墙曝光 / 点击（props: step show/click、src、to）；汇总只数曝光，同设备同集同日去重
+	"register":      true, // 注册成功（props: from wall/direct）
 	"domain_switch": true, // 域名切换（props: from/to/reason，docs/09）
 	"push_received": true, // APP 推送到达
 	"push_clicked":  true, // APP 推送点击
+	"web_vitals":    true, // Web 性能指标（W4-1；props: name LCP/INP/CLS/FCP/TTFB、value、rating、nav、route）
 }
 
 func allowedType(t string) bool { return allowedTypes[t] }

@@ -2,8 +2,8 @@
 # 构建：docker build --build-arg CDN_ASSET_PREFIX=https://cdn.example.com/apps -t xsite/apps:<版本> apps/
 #
 # 为什么不是纯静态站：adapter 是 adapter-bun，产物需要 Bun 进程跑 SSR 与 BFF（/api/v1 透传）。
-# build/client/_app/immutable 是带内容哈希、可以放 CDN 的那部分，由 compose 里的 assets 一次性
-# 服务用 scripts/upload-assets.ts 推到 R2（和应用同一个镜像，保证是同一次构建的产物）。
+# build/client/_app/immutable 是带内容哈希、可以放 CDN 的部分；_app/version.json 是版本轮询用的
+# 可变对象。compose 里的 assets 一次性服务先上传前者、再覆盖后者（和应用同一个镜像，保证同一次构建）。
 #
 # 构建期注入的两个值必须写进 .env.production.local 而不是只 export 环境变量：
 # scripts/with-env.ts 会用 .env.production 的内容覆盖已有的同名环境变量，而那份已提交的文件里
@@ -45,8 +45,8 @@ ENV NODE_ENV=production \
 COPY --from=build /app/build ./build
 COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/scripts/with-env.ts ./scripts/with-env.ts
-# 发布时把 build/client/_app/immutable 推到 R2 的一次性任务（compose 里的 assets 服务）。
-# 刻意和应用用同一个镜像：上传的产物与正在运行的这一版是同一次构建的，内容哈希不可能对不上
+# 发布任务要读取同一次构建的 immutable 产物与 version.json；脚本最后才覆盖可变版本对象。
+# 刻意和应用用同一个镜像，避免页面版本与 CDN 文件来自两次独立构建。
 COPY --from=build /app/scripts/upload-assets.ts ./scripts/upload-assets.ts
 COPY --from=build /app/.env.production ./.env.production
 COPY --from=build /app/.env.production.local ./.env.production.local

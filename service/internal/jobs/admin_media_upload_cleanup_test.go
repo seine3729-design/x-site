@@ -29,7 +29,15 @@ func (s *uploadCleanupRepoStub) DeleteExpired(_ context.Context, id uuid.UUID) e
 	return nil
 }
 
-type uploadDeleteStoreStub struct{ keys []string }
+type uploadDeleteStoreStub struct {
+	keys    []string
+	aborted []string // "key|uploadID"
+}
+
+func (s *uploadDeleteStoreStub) AbortMultipart(_ context.Context, key, uploadID string) error {
+	s.aborted = append(s.aborted, key+"|"+uploadID)
+	return nil
+}
 
 func (s *uploadDeleteStoreStub) PutStream(context.Context, string, io.Reader, int64, blob.PutOptions) error {
 	return nil
@@ -91,5 +99,37 @@ func TestAdminMediaUploadCleanupDeletesOnlyUnreferencedObjects(t *testing.T) {
 	}
 	if len(repo.deleted) != 4 {
 		t.Fatalf("应删除全部过期会话记录，得到 %d", len(repo.deleted))
+	}
+	if len(stage.aborted) != 0 {
+		t.Fatalf("没有分片上传的会话不应调用放弃：%v", stage.aborted)
+	}
+}
+
+// 停传过期、中途失败的分片上传要放弃掉（残片计费）；已合并的不能再放弃。
+func TestAdminMediaUploadCleanupAbortsUnfinishedMultipart(t *testing.T) {
+	now := time.Now().UTC()
+	stalled := upload.Asset{ID: uuid.NewV7(), ProviderID: 1, Purpose: upload.PurposeEpisodeVideo, Kind: upload.KindVideo,
+		Status: upload.StatusUploading, SourceKey: "video/source/stalled.mp4", PartSize: upload.VideoPartSize, MultipartUploadID: "mp-stalled", ExpiresAt: now}
+	failed := upload.Asset{ID: uuid.NewV7(), ProviderID: 1, Purpose: upload.PurposeAdVideo, Kind: upload.KindVideo,
+		Status: upload.StatusFailed, SourceKey: "video/source/failed.mp4", PartSize: upload.VideoPartSize, MultipartUploadID: "mp-failed", ExpiresAt: now}
+	merged := upload.Asset{ID: uuid.NewV7(), ProviderID: 1, Purpose: upload.PurposeEpisodeVideo, Kind: upload.KindVideo,
+		Status: upload.StatusRunning, SourceKey: "video/source/merged.mp4", PartSize: upload.VideoPartSize, MultipartUploadID: "mp-merged", ExpiresAt: now}
+	repo := &uploadCleanupRepoStub{assets: []upload.Asset{stalled, failed, merged}}
+	stage := &uploadDeleteStoreStub{}
+	w := &AdminMediaUploadCleanupWorker{
+		Repo: repo, Stores: uploadResolverStub{image: &uploadDeleteStoreStub{}, video: &uploadDeleteStoreStub{}}, Stage: stage,
+	}
+	if err := w.Work(context.Background(), &river.Job[AdminMediaUploadCleanupArgs]{}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		upload.StageKey(1, stalled.SourceKey) + "|mp-stalled",
+		upload.StageKey(1, failed.SourceKey) + "|mp-failed",
+	}
+	if len(stage.aborted) != 2 || stage.aborted[0] != want[0] || stage.aborted[1] != want[1] {
+		t.Fatalf("应只放弃未完成的两个分片上传：%v", stage.aborted)
+	}
+	if len(repo.deleted) != 3 {
+		t.Fatalf("会话记录应全部删除，得到 %d", len(repo.deleted))
 	}
 }

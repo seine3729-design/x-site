@@ -60,8 +60,10 @@ export default defineConfig({
 			paths: {
 				assets: assetPrefix()
 			},
-			// 小于这个长度的样式直接写进 HTML，首屏不用再等一次样式请求。
-			inlineStyleThreshold: 12_000,
+			// 样式全部写进 HTML（docs/04 E）：主样式表约 104 KB（br 约 14 KB），放在 CDN 上时是渲染阻塞请求，
+			// 首屏要多等一次与 CDN 的握手和下载，实测慢速 4G 下 FCP 因此推迟约 0.8 秒。内联后 HTML 约
+			// 多 14–18 KB（br），仍在「HTML ≤ 50 KB」的预算内（`bun run budget` 会打出内联样式的体积）。
+			inlineStyleThreshold: 160_000,
 			compilerOptions: {
 				runes: ({ filename }) =>
 					filename.split(/[/\\]/).includes('node_modules') ? undefined : true

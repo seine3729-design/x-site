@@ -67,10 +67,17 @@ type recordingStore struct {
 	// failGet 为 true 时读取即失败，用来证明暂存已就位的路径不会再回主存储搬运文件。
 	failGet bool
 	gets    int
+	// 分片上传：UploadId → 片号 → 内容（实现见 handlers_parts_test.go）
+	uploads   map[string]map[int32][]byte
+	uploadKey map[string]string
+	aborted   []string
+	// partErr 非 nil 时 UploadPart 失败一次后自动清空，模拟对象存储偶发 5xx。
+	partErr error
+	nextID  int
 }
 
 func newRecordingStore() *recordingStore {
-	return &recordingStore{objects: map[string][]byte{}}
+	return &recordingStore{objects: map[string][]byte{}, uploads: map[string]map[int32][]byte{}, uploadKey: map[string]string{}}
 }
 
 func (s *recordingStore) PutStream(_ context.Context, key string, body io.Reader, size int64, _ blob.PutOptions) error {

@@ -54,12 +54,14 @@
 	--animate-fade-in: fade-in 0.24s var(--ease-out-soft) both;
 	--animate-rise: rise 0.28s var(--ease-out-soft) both;
 
+	/* 骨架扫光只动 transform：这类动画跑在合成器线程，不触发重绘也不占主线程。
+	   原来动的是 background-position，每帧都要把整块元素重画一遍，一屏几十个骨架时手机上明显掉帧。 */
 	@keyframes shimmer {
 		from {
-			background-position: 200% 0;
+			transform: translate3d(-100%, 0, 0);
 		}
 		to {
-			background-position: -200% 0;
+			transform: translate3d(100%, 0, 0);
 		}
 	}
 	@keyframes fade-in {
@@ -286,10 +288,29 @@
 		@apply text-lg font-bold tracking-tight md:text-xl;
 	}
 
+	/* 骨架屏：平底色 + 一道扫光。全站只有这一种加载占位（图片占位见 #lib/media/BlobImage.svelte）。 */
 	.skeleton {
-		background: linear-gradient(90deg, var(--sunken) 25%, var(--raised) 37%, var(--sunken) 63%);
-		background-size: 400% 100%;
-		@apply animate-shimmer rounded-lg;
+		position: relative;
+		overflow: hidden;
+		background: var(--sunken);
+		@apply rounded-lg;
+	}
+	/* 扫光是一个和元素等宽的伪元素，用 transform 从左扫到右：这类动画跑在合成器线程，
+	   既不重绘也不占主线程，一屏几十个骨架同时动也不掉帧。两端透明所以没有硬边。
+	   底色与 .skeleton 自身一致，动画停下或被卸载时只剩一块平底色，看不出跳变。 */
+	.skeleton::after {
+		content: '';
+		position: absolute;
+		inset: 0;
+		background: linear-gradient(90deg, transparent, var(--raised), transparent);
+		transform: translate3d(-100%, 0, 0);
+		animation: var(--animate-shimmer);
+	}
+	/* 用户要求减少动态效果时不扫光，只留平底色（WCAG prefers-reduced-motion） */
+	@media (prefers-reduced-motion: reduce) {
+		.skeleton::after {
+			display: none;
+		}
 	}
 
 	.no-scrollbar {

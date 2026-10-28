@@ -28,7 +28,7 @@
 	// 上下条先把选源、清单与首段缓冲好，滑过去时直接起播，不用再等一轮网络往返（docs/04 B.7）。
 	// 预加载的两条缓冲上限压到 8 秒，成为当前条后由 activate() 调回正常值，长时间连刷内存也稳。
 	// 一律按「预加载」建，再由下面的 $effect 决定谁是当前条（构造时读 active 只会拿到初值）
-	const player = new PlayerController({ onLineReport: reportLine, autoplay: false, preloadBufferSec: 8 });
+	const player = new PlayerController({ onLineReport: reportLine, autoplay: false, preloadBufferSec: 8, analytics: 'feed' });
 	// 刷剧流支持在同一部剧里往下看：维护当前集，提供「下一集」；播完一集自动连播，整部看完才由 onended 换下一条剧
 	const playable = $derived(drama.episodes.filter((e) => e.playable));
 	let episodeIndex = $state(0);
@@ -38,7 +38,7 @@
 	function playNextEpisode() {
 		if (episodeIndex < playable.length - 1) {
 			episodeIndex += 1;
-			void player.load(playable[episodeIndex]!.id);
+			void player.load(playable[episodeIndex]!.id, 0, { dramaId: drama.id });
 		}
 	}
 
@@ -59,7 +59,7 @@
 
 	onMount(() => {
 		if (episode) {
-			void player.load(episode.id);
+			void player.load(episode.id, 0, { dramaId: drama.id });
 		}
 		return () => {
 			const position = Math.floor(player.currentTime);

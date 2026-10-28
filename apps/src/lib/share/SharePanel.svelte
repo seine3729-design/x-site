@@ -2,7 +2,7 @@
 	/**
 	 * 分享面板（docs/04 C.7）：复制链接、系统分享、生成并下载海报。
 	 * 手机从底部滑上来，电脑是居中弹窗（`#lib/ui/Sheet.svelte` 的 center）。
-	 * 海报在面板打开后才画（Canvas + 仓库内的二维码编码器），不进首屏。
+	 * 海报在面板打开后才画（Canvas + 仓库内的二维码编码器），都不进首屏包。
 	 */
 	import { getI18n } from '#lib/i18n/context.ts';
 	import { imageSources } from '#lib/media/image.ts';
@@ -10,7 +10,7 @@
 	import { toasts } from '#lib/stores/toast.svelte.ts';
 	import Icon from '#lib/ui/Icon.svelte';
 	import Sheet from '#lib/ui/Sheet.svelte';
-	import { POSTER_HEIGHT, POSTER_WIDTH, posterFileName, type PosterOptions } from './poster.ts';
+	import { POSTER_HEIGHT, POSTER_WIDTH, posterFileName, type PosterOptions } from './poster-spec.ts';
 
 	type Props = {
 		open: boolean;
@@ -30,8 +30,18 @@
 	const site = $derived(getSite());
 	const posterOn = $derived(featureOn(site.features, 'share_poster'));
 
+	/**
+	 * 抽屉滑入要 300ms，海报通常几十毫秒就画好了。
+	 * 这段时间内不要显示转圈：它会在抽屉还在滑的时候出现又消失，看起来就是「闪一下」
+	 * （ui-ux loading-indicators：不要为近乎瞬时的工作闪现指示器）。
+	 * 只有封面图真的要现下载时，才在抽屉停稳之后出现转圈。
+	 */
+	const SPINNER_DELAY_MS = 300;
+
 	let canvas = $state<HTMLCanvasElement>();
 	let phase = $state<'idle' | 'drawing' | 'ready' | 'error'>('idle');
+	/** 画得太慢，可以显示转圈了 */
+	let slow = $state(false);
 	let drawn = '';
 
 	const options = $derived<PosterOptions>({
@@ -43,7 +53,8 @@
 		scanHint: i18n.t('share.scan')
 	});
 
-	// 面板打开后才画海报：Canvas 与二维码模块都按需加载，不进首屏包
+	// 面板打开后才画海报：Canvas 绘制与二维码编码器都在 poster.ts 里，只有这一个动态入口。
+	// 静态导入只许指向 poster-spec.ts（尺寸 / 文件名 / 类型），指到 poster.ts 会让分包失效。
 	$effect(() => {
 		const el = canvas;
 		const key = `${url}|${title}|${subtitle ?? ''}`;
@@ -58,6 +69,16 @@
 				phase = 'ready';
 			})
 			.catch(() => (phase = 'error'));
+	});
+
+	// 转圈延迟登场：绘制一结束就把计时器撤掉，快路径下它永远不会亮
+	$effect(() => {
+		if (phase !== 'drawing') {
+			slow = false;
+			return;
+		}
+		const timer = setTimeout(() => (slow = true), SPINNER_DELAY_MS);
+		return () => clearTimeout(timer);
 	});
 
 	async function copy() {
@@ -110,21 +131,25 @@
 	<div class="flex flex-col gap-4 px-4 pt-1 pb-4">
 		{#if posterOn}
 			<!-- 海报预览：固定 9:16 占位，画好前后不跳动 -->
-			<div class="relative mx-auto w-full max-w-56 overflow-hidden rounded-card bg-sunken" style:aspect-ratio="{POSTER_WIDTH} / {POSTER_HEIGHT}">
+			<div
+				class="relative mx-auto w-full max-w-56 overflow-hidden rounded-card bg-sunken"
+				style:aspect-ratio="{POSTER_WIDTH} / {POSTER_HEIGHT}"
+				aria-busy={phase === 'drawing'}
+			>
 				<canvas
 					bind:this={canvas}
 					width={POSTER_WIDTH}
 					height={POSTER_HEIGHT}
-					class="size-full transition-opacity duration-300 {phase === 'ready' ? 'opacity-100' : 'opacity-0'}"
+					class="size-full transition-opacity duration-300 ease-out-soft {phase === 'ready' ? 'opacity-100' : 'opacity-0'}"
 					aria-label={i18n.t('share.poster')}
 				></canvas>
-				{#if phase !== 'ready'}
+				{#if phase === 'error'}
 					<div class="absolute inset-0 grid place-items-center" role="status">
-						{#if phase === 'error'}
-							<span class="px-4 text-center text-xs text-fg-subtle">{i18n.t('share.posterFailed')}</span>
-						{:else}
-							<Icon name="loader-circle" size={26} class="animate-spin text-fg-subtle" />
-						{/if}
+						<span class="px-4 text-center text-xs text-fg-subtle">{i18n.t('share.posterFailed')}</span>
+					</div>
+				{:else if slow}
+					<div class="absolute inset-0 grid place-items-center" role="status">
+						<Icon name="loader-circle" size={26} class="animate-spin text-fg-subtle" />
 					</div>
 				{/if}
 			</div>

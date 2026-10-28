@@ -26,6 +26,8 @@ type uploadService interface {
 	Init(ctx context.Context, adminID int64, in dom.InitInput) (dom.Asset, error)
 	GetOwned(ctx context.Context, id uuid.UUID, adminID int64) (dom.Asset, error)
 	ClaimWrite(ctx context.Context, id uuid.UUID, adminID int64) (dom.Asset, error)
+	AttachMultipart(ctx context.Context, id uuid.UUID, adminID int64, uploadID string) error
+	ClaimPart(ctx context.Context, id uuid.UUID, adminID int64, number int32, size int64) (dom.Asset, error)
 	MarkUploaded(ctx context.Context, id uuid.UUID, adminID int64) error
 	Fail(ctx context.Context, id uuid.UUID, adminID int64, message string) error
 	CompleteImage(ctx context.Context, id uuid.UUID, adminID int64) (dom.Asset, error)
@@ -44,18 +46,26 @@ type objectStore interface {
 	Delete(ctx context.Context, key string) error
 }
 
+// sourceStore 是私有转码暂存桶：整段写入用 objectStore，视频分片并行上传用分片接口。
+type sourceStore interface {
+	objectStore
+	blob.MultipartStore
+}
+
 // Handlers 由 app 注入上传会话、分集转封装服务及图片/视频源桶。
 type Handlers struct {
 	Svc    uploadService
 	Media  episodeMediaService
 	Stores uploadstore.Resolver // 后台配置的 storage_provider 主源 / 已固定源
-	Source objectStore          // 私有转码暂存桶（不经 CDN），同时是视频源文件的唯一落点
+	Source sourceStore          // 私有转码暂存桶（不经 CDN），同时是视频源文件的唯一落点
 	Images ImageOptimizer       // 外部图片优化服务；为 nil 时优化接口回 503，浏览器退回本地压缩
+	// PartSlots 限制全进程同时缓冲在内存里的视频分片数（每片 VideoPartSize）；为 nil 时不限（测试用）。
+	PartSlots chan struct{}
 }
 
 // 使用编译期断言确保 app 只能注入具有所需能力的服务和桶。
 var _ uploadService = (*dom.Service)(nil)
-var _ objectStore = (*blob.Bucket)(nil)
+var _ sourceStore = (*blob.Bucket)(nil)
 
 type initRequest struct {
 	Purpose     string `json:"purpose" binding:"required,max=64"`
@@ -63,6 +73,8 @@ type initRequest struct {
 	ImageFormat string `json:"image_format" binding:"max=16"`
 	SizeBytes   int64  `json:"size_bytes" binding:"required"`
 	EpisodeID   int64  `json:"episode_id"`
+	// Multipart 为 true 时按分片并行上传（只用于视频）；不传保持整段单次上传，兼容旧页面。
+	Multipart bool `json:"multipart"`
 }
 
 type assetDTO struct {
@@ -83,6 +95,9 @@ type assetDTO struct {
 	ExpiresAt      string  `json:"expires_at"`
 	CreatedAt      string  `json:"created_at"`
 	UpdatedAt      string  `json:"updated_at"`
+	// PartSize / PartCount 为 0 表示整段单次上传；否则浏览器按片号 1…PartCount 逐片 PUT。
+	PartSize  int64 `json:"part_size"`
+	PartCount int32 `json:"part_count"`
 }
 
 func assetOf(a dom.Asset) assetDTO {
@@ -96,6 +111,7 @@ func assetOf(a dom.Asset) assetDTO {
 		SizeBytes: a.SizeBytes, SourceKey: a.SourceKey, OutputKey: a.OutputKey, EpisodeID: a.EpisodeID, TranscodeJobID: jobID,
 		Status: string(a.Status), Progress: a.Progress, Error: a.Error,
 		ExpiresAt: a.ExpiresAt.UTC().Format(time.RFC3339), CreatedAt: a.CreatedAt.UTC().Format(time.RFC3339), UpdatedAt: a.UpdatedAt.UTC().Format(time.RFC3339),
+		PartSize: a.PartSize, PartCount: a.PartCount(),
 	}
 }
 
@@ -142,6 +158,10 @@ func (h *Handlers) Init(c *gin.Context) {
 		respond.Error(c, err)
 		return
 	}
+	if req.Multipart && h.Source == nil {
+		respond.Error(c, errs.ErrUnavailable.WithMessage("转码暂存桶未配置"))
+		return
+	}
 	target, err := h.Stores.Primary(c.Request.Context(), kind)
 	if err != nil {
 		respond.Error(c, err)
@@ -151,13 +171,21 @@ func (h *Handlers) Init(c *gin.Context) {
 		ProviderID: target.ProviderID, ProviderEndpoint: target.Endpoint, ProviderRegion: target.Region, ProviderBucket: target.Bucket,
 		ProviderPathStyle: target.PathStyle, ProviderPathPrefix: target.PathPrefix,
 		Purpose: dom.Purpose(req.Purpose), MIME: req.MIME, ImageFormat: dom.ImageFormat(req.ImageFormat), SizeBytes: req.SizeBytes, EpisodeID: req.EpisodeID,
+		Multipart: req.Multipart,
 	})
 	if err != nil {
 		respond.Error(c, err)
 		return
 	}
+	if a.Multipart() {
+		if a, err = h.startMultipart(c.Request.Context(), a); err != nil {
+			respond.Error(c, err)
+			return
+		}
+	}
 	admin.SetAudit(c, admin.AuditDetail{Action: "media_upload.create", TargetType: "admin_media_upload", TargetID: a.ID.String(),
-		After: gin.H{"provider_id": a.ProviderID, "purpose": a.Purpose, "kind": a.Kind, "size_bytes": a.SizeBytes, "image_format": a.ImageFormat}})
+		After: gin.H{"provider_id": a.ProviderID, "purpose": a.Purpose, "kind": a.Kind, "size_bytes": a.SizeBytes, "image_format": a.ImageFormat,
+			"part_size": a.PartSize}})
 	respond.OK(c, assetOf(a))
 }
 
@@ -181,6 +209,12 @@ func (h *Handlers) discardFailedObject(ctx context.Context, store objectStore, a
 	if a.Kind == dom.KindVideo && h.Source != nil {
 		if err := h.Source.Delete(cleanupCtx, dom.StageKey(a.ProviderID, a.SourceKey)); err != nil && !errors.Is(err, blob.ErrNotFound) {
 			message += "；转码暂存清理待重试"
+		}
+		// 已合并的分片上传会返回 ErrNotFound，按「已清理」处理；没合并的要放弃掉，否则残片一直计费
+		if a.MultipartUploadID != "" {
+			if err := h.Source.AbortMultipart(cleanupCtx, dom.StageKey(a.ProviderID, a.SourceKey), a.MultipartUploadID); err != nil && !errors.Is(err, blob.ErrNotFound) {
+				message += "；分片清理待重试"
+			}
 		}
 	}
 	_ = h.Svc.Fail(cleanupCtx, a.ID, a.AdminID, message)
@@ -300,6 +334,19 @@ func (h *Handlers) Complete(c *gin.Context) {
 	}
 	if _, allowed := requirePurpose(c, a.Purpose); !allowed {
 		return
+	}
+	// 分片上传：先核对并合并分片，之后与整段上传走同一条校验与入队路径（stageVideo 会再 Head 核对一次）。
+	if a.Multipart() && a.Status == dom.StatusUploading {
+		if err := h.finishParts(c.Request.Context(), a); err != nil {
+			respond.Error(c, err)
+			return
+		}
+		if err := h.Svc.MarkUploaded(c.Request.Context(), id, adminID); err != nil {
+			h.discardStagedVideo(c.Request.Context(), a, "上传状态更新失败")
+			respond.Error(c, err)
+			return
+		}
+		a.Status = dom.StatusUploaded
 	}
 	if a.Status != dom.StatusUploaded {
 		respond.Error(c, errs.ErrBadRequest.WithMessage("文件尚未上传完成"))

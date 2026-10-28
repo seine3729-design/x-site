@@ -26,7 +26,7 @@
 		>
 			<!-- 封面抽出来的氛围底色，hover 时稍微提亮 -->
 			<div class="absolute inset-0 opacity-25 blur-3xl transition-opacity duration-500 group-hover:opacity-40" aria-hidden="true">
-				<Poster cover={drama.cover_portrait} title={drama.title} class="absolute! inset-0 size-full" decorative />
+				<Poster cover={drama.cover_portrait} title={drama.title} class="absolute! inset-0 size-full" decorative blurred />
 			</div>
 			<div class="relative flex gap-3.5 p-3">
 				<a

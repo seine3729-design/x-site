@@ -120,6 +120,10 @@ type AdminMediaUpload struct {
 	ProviderPathStyle bool
 	// 创建时快照的桶内前缀
 	ProviderPathPrefix string
+	// 分片大小（字节）；0 表示整段单次上传。除最后一片外每片都是这个大小
+	PartSize int64
+	// 私有入库桶上的分片上传 ID；空串表示未使用分片上传。会话过期未完成时由清理任务放弃该分片上传
+	MultipartUploadID string
 }
 
 // 后台菜单：一级 / 二级两层树（docs/adr/0006）。页面由代码提供，内置项不能删除、路径不能改

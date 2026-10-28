@@ -175,7 +175,13 @@
 		background: var(--overlay);
 		box-shadow: var(--shadow-pop);
 		transition: translate 240ms var(--ease-out-soft);
-		will-change: translate;
+		/*
+		  两个属性都要声明：拖拽改 translate，进出场动画改 transform。
+		  只写 translate 时进出场那一下拿不到提前提层的提示，海报之类的首屏工作一占主线程就容易丢帧。
+		  别图省事把动画也改成 translate：animation-fill-mode 是 both，动画会永久接管这个属性，
+		  行内的拖拽位移会被它盖掉（动画的层叠来源高于行内样式），下拉关闭直接失效。
+		*/
+		will-change: transform, translate;
 		padding-bottom: var(--safe-bottom);
 	}
 	/* 列表类：高度写死，内容再怎么加载顶边都不动 */

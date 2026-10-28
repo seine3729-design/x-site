@@ -3,12 +3,26 @@
 -- name: CreateAdminMediaUpload :one
 INSERT INTO admin_media_upload (
     id, admin_id, provider_id, provider_endpoint, provider_region, provider_bucket, provider_path_style, provider_path_prefix,
-    purpose, kind, mime, image_format, size_bytes, source_key, output_key, episode_id, expires_at
+    purpose, kind, mime, image_format, size_bytes, source_key, output_key, episode_id, expires_at, part_size
 ) VALUES (
     @id, @admin_id, @provider_id, @provider_endpoint, @provider_region, @provider_bucket, @provider_path_style, @provider_path_prefix,
-    @purpose, @kind, @mime, @image_format, @size_bytes, @source_key, @output_key, @episode_id, @expires_at
+    @purpose, @kind, @mime, @image_format, @size_bytes, @source_key, @output_key, @episode_id, @expires_at, @part_size
 )
 RETURNING *;
+
+-- name: SetAdminMediaUploadMultipart :execrows
+-- 建会话后登记私有入库桶上的分片上传 ID；只能登记一次，且只对声明了分片大小的新会话生效。
+UPDATE admin_media_upload
+SET multipart_upload_id = @multipart_upload_id::text, updated_at = now()
+WHERE id = @id AND admin_id = @admin_id AND status = 'created' AND part_size > 0 AND multipart_upload_id = '';
+
+-- name: TouchAdminMediaUploadPart :execrows
+-- 收到一片前领取写入权并顺延过期时间：只要分片还在陆续到达，会话就保持「上传中」不过期；
+-- 停传超过会话时长的，交给清理任务放弃分片上传。并发的多片各自顺延，互不冲突。
+UPDATE admin_media_upload
+SET status = 'uploading', error = '', expires_at = @expires_at::timestamptz, updated_at = now()
+WHERE id = @id AND admin_id = @admin_id AND status IN ('created', 'uploading')
+  AND multipart_upload_id <> '' AND expires_at > now();
 
 -- name: GetAdminMediaUpload :one
 SELECT * FROM admin_media_upload WHERE id = $1;

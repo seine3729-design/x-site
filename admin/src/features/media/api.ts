@@ -34,6 +34,9 @@ export type MediaUpload = {
   expires_at: string
   created_at: string
   updated_at: string
+  /** 分片大小与片数；都为 0 表示整段单次上传（图片，或建会话时没有声明 multipart）。 */
+  part_size: number
+  part_count: number
 }
 
 export type CreateMediaUploadInput = {
@@ -42,6 +45,8 @@ export type CreateMediaUploadInput = {
   image_format?: ImageFormat
   size_bytes: number
   episode_id?: number
+  /** 视频按分片并行上传（分片大小由服务端决定）；图片不支持。 */
+  multipart?: boolean
 }
 
 /** 服务端图片优化的超时：后端要等外部优化服务两次往返（它自己的上限是 90 秒）。 */
@@ -63,6 +68,13 @@ export const mediaUploadApi = {
     }),
   putContent: (id: string, body: Blob, contentType: string, onProgress?: (loaded: number, total: number) => void) =>
     binaryUpload.put<{ id: string; status: 'uploaded' }>(`/uploads/${id}/content`, body, { contentType, onProgress }),
+  /** 提交视频的第 number 片（从 1 开始）。同一片可以重复提交，以最后一次为准。 */
+  putPart: (id: string, number: number, body: Blob, onProgress?: (loaded: number, total: number) => void, signal?: AbortSignal) =>
+    binaryUpload.put<{ id: string; part_number: number; size_bytes: number }>(`/uploads/${id}/parts/${number}`, body, {
+      contentType: 'application/octet-stream',
+      onProgress,
+      signal,
+    }),
   /**
    * 完成上传：服务端核对对象元数据后进入最终状态或转码队列。
    *

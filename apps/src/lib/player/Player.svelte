@@ -407,7 +407,13 @@
 	{/if}
 
 	{#if player.wall}
-		<AccessWall wall={player.wall} trialEnded={player.trialEnded} onretry={() => player.retry()} {detailHref} />
+		<AccessWall
+			wall={player.wall}
+			trialEnded={player.trialEnded}
+			onretry={() => player.retry()}
+			onauth={(to) => player.stats?.('wallClick', to)}
+			{detailHref}
+		/>
 	{/if}
 
 	{#if overlay}

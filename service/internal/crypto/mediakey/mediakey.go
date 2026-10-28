@@ -131,6 +131,45 @@ func (k *Keyring) Unwrap(episodeID int64, keyVer int32, wrapped []byte) ([]byte,
 // CurrentKID 返回用于包装新密钥的 KEK 编号。
 func (k *Keyring) CurrentKID() string { return k.current }
 
+// KIDOf 返回密文里记录的 KEK 编号；格式不对时返回空串。只读前缀，不验证密文本身。
+func KIDOf(wrapped []byte) string {
+	i := bytes.IndexByte(wrapped, ':')
+	if i <= 0 || i > maxKidLen {
+		return ""
+	}
+	return string(wrapped[:i])
+}
+
+// Rewrap 把一把内容密钥的密文改用 target 的当前 KEK 包装（KEK 轮换、本地数据导入线上后用）。
+//
+// target 能解开、且密文已经是当前 KEK 包装的，返回 changed=false，不用改。否则依次用 target 与
+// fallback 解开（fallback 可为 nil），再用 target 的当前 KEK 包装，并确认新密文能被 target 解开、
+// 明文与原来一致。两者都解不开时返回最后一次的错误（ErrUnknownKEK / ErrCorrupt）。
+//
+// 先试 target 再试 fallback，是为了处理两边 kid 相同、secret 不同的情况：密文按 kid 找 KEK，
+// target 里同名的那把解不开（ErrCorrupt），只能交给 fallback。
+func Rewrap(target, fallback *Keyring, episodeID int64, keyVer int32, wrapped []byte) ([]byte, bool, error) {
+	key, err := target.Unwrap(episodeID, keyVer, wrapped)
+	if err == nil && KIDOf(wrapped) == target.current {
+		return nil, false, nil
+	}
+	if err != nil && fallback != nil {
+		key, err = fallback.Unwrap(episodeID, keyVer, wrapped)
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	out, err := target.Wrap(episodeID, keyVer, key)
+	if err != nil {
+		return nil, false, err
+	}
+	check, err := target.Unwrap(episodeID, keyVer, out)
+	if err != nil || !bytes.Equal(check, key) {
+		return nil, false, fmt.Errorf("mediakey: 重新包装后复核失败: %w", ErrCorrupt)
+	}
+	return out, true, nil
+}
+
 func aad(episodeID int64, keyVer int32) []byte {
 	return []byte("media_key|wrapped_key|" + strconv.FormatInt(episodeID, 10) + "|" + strconv.FormatInt(int64(keyVer), 10))
 }

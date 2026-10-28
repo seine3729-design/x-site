@@ -31,6 +31,22 @@ export function mergeDomains(fromConfig: unknown, fromEnv: readonly string[] = [
 	return out;
 }
 
+/** 地址列表 → 去重的 scheme://host[:port]；不合法的跳过（图片缩放按 origin 比较原图来自哪条线路）。 */
+export function originsOf(urls: readonly string[]): string[] {
+	const out: string[] = [];
+	for (const value of urls) {
+		try {
+			const { origin, protocol } = new URL(value);
+			if ((protocol === 'https:' || protocol === 'http:') && !out.includes(origin)) {
+				out.push(origin);
+			}
+		} catch {
+			// 不是合法地址
+		}
+	}
+	return out;
+}
+
 function listOf(value: unknown): string[] {
 	return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
 }

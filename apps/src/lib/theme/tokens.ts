@@ -3,7 +3,7 @@
  * （docs/04 C.8、docs/specs/W0-6.md）。
  *
  * 为什么推导而不是让后台配 18 个：运营配不出协调的 18 个色；也不写死 5 套完整色板，
- * 否则改一个预设要维护 36 个值。推导规则集中在这里，由 tokens.test.ts 逐个预设校验对比度。
+ * 否则改一个预设要维护 36 个值。推导规则集中在这里，改动预设时需核对对比度。
  *
  * 只在服务端用（hooks.server.ts）。客户端组件要的是 settings.ts 里的类型与枚举，不要引这个文件，
  * 否则颜色推导会白白进首屏 JS。
@@ -30,7 +30,7 @@ const DARK_SEEDS: Record<ThemePreset, Seeds> = {
 	midnight: { primary: '#3b82f6', accent: '#22d3ee', bg: '#0a1020', surface: '#141c2f', text: '#f1f5f9', muted: '#94a3b8' },
 	forest: { primary: '#10b981', accent: '#84cc16', bg: '#071410', surface: '#11211b', text: '#ecfdf5', muted: '#9ca3af' },
 	// 紫调的主色用 violet-600 而不是更亮的 violet-500：#8b5cf6 是中间调，白字 4.44:1、深字更低，
-	// 按钮文字怎么选都够不到 AA（tokens.test.ts 会拦住）
+	// 按钮文字怎么选都够不到 AA，因此使用更深的 violet-600
 	violet: { primary: '#7c3aed', accent: '#ec4899', bg: '#120b1f', surface: '#1e1430', text: '#f5f3ff', muted: '#a1a1aa' },
 	neutral: { primary: '#525252', accent: '#737373', bg: '#0c0c0c', surface: '#1a1a1a', text: '#fafafa', muted: '#a3a3a3' }
 };

@@ -13,6 +13,8 @@ func (h *Handlers) Routes(authed gin.IRouter) {
 	g := authed.Group("/uploads")
 	g.POST("", h.Init)
 	g.PUT("/:id/content", h.PutContent)
+	// 视频分片并行上传：每片一个请求，片号从 1 开始（Init 时声明 multipart: true）
+	g.PUT("/:id/parts/:number", h.PutPart)
 	g.POST("/:id/complete", h.Complete)
 	g.GET("/:id", h.Get)
 	// 图片辅助接口单独挂在 /images 下：放到 /uploads 里会和 GET /uploads/:id 的参数段撞成路由冲突。

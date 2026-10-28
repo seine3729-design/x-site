@@ -240,6 +240,7 @@ func newEnv(secureCookie bool) *env {
 	})
 	authed.POST("/test/plain", ok)
 	authed.POST("/test/fail", func(c *gin.Context) { c.AbortWithStatus(http.StatusConflict) })
+	authed.POST("/test/skip-audit", func(c *gin.Context) { SkipAudit(c); ok(c) })
 	// 高敏写路由，用于验证重新验证门槛（S2-6）：写需要 sensitive.edit
 	authed.POST("/test/sensitive", RequirePage("sensitive"), ok)
 	return e
@@ -913,10 +914,14 @@ func TestAudit(t *testing.T) {
 	if code := e.write("POST", "/api/admin/test/fail", "", root, "tok-s").Code; code != http.StatusConflict {
 		t.Fatalf("期望 409，得到 %d", code)
 	}
+	// 数据面高频写入（视频分片）显式跳过审计
+	if code := e.write("POST", "/api/admin/test/skip-audit", "", root, "tok-s").Code; code != http.StatusOK {
+		t.Fatalf("期望 200，得到 %d", code)
+	}
 	e.do(req{method: http.MethodGet, path: "/api/admin/test/dramas", cookie: "tok-s"})
 
 	if len(e.audit.entries) != 2 {
-		t.Fatalf("只有成功的写请求记审计（读请求、失败请求不记），得到 %d 条", len(e.audit.entries))
+		t.Fatalf("只有成功、未声明跳过的写请求记审计（读请求、失败请求、SkipAudit 不记），得到 %d 条", len(e.audit.entries))
 	}
 	detailed, plain := e.audit.entries[0], e.audit.entries[1]
 	if detailed.Action != "storage_provider.update" || detailed.TargetType != "storage_provider" || detailed.TargetID != "3" {

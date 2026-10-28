@@ -615,6 +615,8 @@ type Querier interface {
 	ListLineRulesByProvider(ctx context.Context, providerID int64) ([]StorageLineRule, error)
 	// 存在且不在回收站的剧（人工调整的目标校验）。
 	ListLiveDramaIDsAmong(ctx context.Context, ids []int64) ([]int64, error)
+	// 运维命令 admintool rewrap-media-keys 用：按主键顺序列出全部内容密钥密文（KEK 轮换、本地数据导入线上后重新包装）。
+	ListMediaKeysForRewrap(ctx context.Context) ([]ListMediaKeysForRewrapRow, error)
 	// 列出媒体对象编号（游标分页，供手动触发复制与迁移逐批入队）。
 	// drama_id 为 0 时不按剧筛选；provider_id 为 0 时不按存储源筛选（按存储源时只列该源上有副本的对象）。
 	ListMediaObjectIDs(ctx context.Context, arg ListMediaObjectIDsParams) ([]int64, error)
@@ -826,8 +828,12 @@ type Querier interface {
 	RevokeSession(ctx context.Context, arg RevokeSessionParams) (int64, error)
 	// 设备下线：吊销该用户名下的指定会话。带 user_id 作用域，防止吊销他人会话。
 	RevokeUserSessionByID(ctx context.Context, arg RevokeUserSessionByIDParams) (int64, error)
+	// 只在密文仍是读出时那一份时替换（乐观并发）：期间有人改过这一行就不动它，由调用方整批回滚。
+	RewrapMediaKey(ctx context.Context, arg RewrapMediaKeyParams) (int64, error)
 	// 停用（即时失效）与重新启用。
 	SetAPIKeyStatus(ctx context.Context, arg SetAPIKeyStatusParams) (SetAPIKeyStatusRow, error)
+	// 建会话后登记私有入库桶上的分片上传 ID；只能登记一次，且只对声明了分片大小的新会话生效。
+	SetAdminMediaUploadMultipart(ctx context.Context, arg SetAdminMediaUploadMultipartParams) (int64, error)
 	// ---------- 二次验证 TOTP（S2-6，docs/06 第 33 节）----------
 	// 绑定 / 换绑 TOTP：保存信封加密后的种子（totp_secret_enc）。
 	SetAdminTOTP(ctx context.Context, arg SetAdminTOTPParams) error
@@ -893,6 +899,9 @@ type Querier interface {
 	TermIDs(ctx context.Context, taxonomyID int64) ([]int64, error)
 	// 记录一次调用。与鉴权分开：鉴权在请求路径上，计数可以异步或批量落库。
 	TouchAPIKeyUsage(ctx context.Context, id int64) error
+	// 收到一片前领取写入权并顺延过期时间：只要分片还在陆续到达，会话就保持「上传中」不过期；
+	// 停传超过会话时长的，交给清理任务放弃分片上传。并发的多片各自顺延，互不冲突。
+	TouchAdminMediaUploadPart(ctx context.Context, arg TouchAdminMediaUploadPartParams) (int64, error)
 	TouchDramas(ctx context.Context, ids []int64) error
 	TouchFbApiKey(ctx context.Context, id int64) error
 	TouchRole(ctx context.Context, id int64) error

@@ -374,3 +374,29 @@ func BenchmarkXDB_LookupUncached(b *testing.B) {
 		_, _ = db.Lookup(addrs[i%len(addrs)])
 	}
 }
+
+// 没配 GEOIP_XDB_PATH 时 NewStorageResolver 的第二个返回值是 nil *Resolver，
+// 装配方会把它装进 jobs.GeoReloader 接口交给周期任务 —— 那是「非 nil 接口里装着 nil 指针」，
+// 接口侧的 r == nil 守卫失效。所以 Reload 必须对 nil 接收者安全，否则任务每轮都 panic。
+func TestReloadIsNilReceiverSafe(t *testing.T) {
+	_, reloader, err := NewStorageResolver("")
+	if err != nil {
+		t.Fatalf("空路径不该报错：%v", err)
+	}
+	if reloader != nil {
+		t.Fatalf("空路径应返回 nil *Resolver，得到 %v", reloader)
+	}
+	changed, err := reloader.Reload()
+	if changed || err != nil {
+		t.Fatalf("nil 解析器的 Reload 应返回 (false, nil)，得到 (%v, %v)", changed, err)
+	}
+}
+
+// 守住上面那个坑的成因：typed nil 装进接口后 != nil，所以不能只靠接口侧的 nil 判断。
+func TestNilResolverInInterfaceIsNotNil(t *testing.T) {
+	_, reloader, _ := NewStorageResolver("")
+	var asInterface interface{ Reload() (bool, error) } = reloader
+	if asInterface == nil {
+		t.Fatal("如果这条断言失败，说明 Go 改了 typed nil 的语义，装配处的守卫可以简化")
+	}
+}

@@ -27,7 +27,7 @@
 	const drama = $derived(data.drama);
 	const episode = $derived(data.episode);
 
-	const player = new PlayerController({ onLineReport: reportLine });
+	const player = new PlayerController({ onLineReport: reportLine, analytics: 'play' });
 	let playerView = $state<ReturnType<typeof Player>>();
 
 	const playable = $derived(drama.episodes.filter((e) => e.playable));
@@ -137,13 +137,14 @@
 			};
 			countdown = null;
 			lastReported = 0;
-			void localHistory.get(drama.id).then((saved) => {
+			const dramaId = drama.id;
+			void localHistory.get(dramaId).then((saved) => {
 				const duration = saved?.duration_sec ?? episode.duration_sec;
 				const resumeAt =
 					saved && saved.episode_number === number && saved.position_sec > 5 && saved.position_sec < duration - 10
 						? saved.position_sec
 						: 0;
-				void player.load(id, resumeAt);
+				void player.load(id, resumeAt, { dramaId });
 				if (resumeAt > 0) {
 					toasts.show(i18n.t('player.resumed', { time: clock(resumeAt) }), {
 						action: { label: i18n.t('player.restart'), run: () => player.seek(0) }

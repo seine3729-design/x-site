@@ -145,7 +145,12 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("GEOIP_XDB_PATH: %w", err)
 	}
-	jobs.ConfigureGeoIPReload(riverCfg, geoReloader, cfg.Storage.GeoIPReloadInterval)
+	// 必须在这里判断具体类型：geoReloader 是 *geoip.Resolver，没配数据文件时为 nil。
+	// 直接传给接口参数会变成「非 nil 接口里装着 nil 指针」，ConfigureGeoIPReload 的守卫失效，
+	// 于是注册一个每轮都白跑的周期任务（改之前是每轮 panic）。
+	if geoReloader != nil {
+		jobs.ConfigureGeoIPReload(riverCfg, geoReloader, cfg.Storage.GeoIPReloadInterval)
+	}
 	// 线路健康探测（S1-6d）：周期性拉线路 probe_path，把成功率与耗时换算成健康分写入 Valkey
 	if cfg.Storage.HealthProbeEnabled {
 		if err := cfg.Storage.ValidateHealthProbe(); err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"uuid"
 
@@ -39,6 +40,7 @@ func adminUploadOf(r sqlcgen.AdminMediaUpload) upload.Asset {
 		ImageFormat: upload.ImageFormat(r.ImageFormat), SizeBytes: r.SizeBytes, SourceKey: r.SourceKey, OutputKey: r.OutputKey,
 		Status: upload.Status(r.Status), Progress: r.Progress, Attempts: r.Attempts, Error: r.Error,
 		ExpiresAt: r.ExpiresAt.Time.UTC(), CreatedAt: r.CreatedAt.Time.UTC(), UpdatedAt: r.UpdatedAt.Time.UTC(),
+		PartSize: r.PartSize, MultipartUploadID: r.MultipartUploadID,
 	}
 	if r.ProviderID.Valid {
 		a.ProviderID = r.ProviderID.Int64
@@ -91,6 +93,7 @@ func (r *AdminMediaUploadRepo) Create(ctx context.Context, a upload.Asset) (uplo
 		Purpose: string(a.Purpose), Kind: string(a.Kind), Mime: a.MIME, ImageFormat: string(a.ImageFormat),
 		SizeBytes: a.SizeBytes, SourceKey: a.SourceKey, OutputKey: a.OutputKey,
 		EpisodeID: nullID(a.EpisodeID), ExpiresAt: pgtype.Timestamptz{Time: a.ExpiresAt, Valid: true},
+		PartSize: a.PartSize,
 	})
 	if err != nil {
 		return upload.Asset{}, uploadErr(err, "创建上传会话")
@@ -109,6 +112,20 @@ func (r *AdminMediaUploadRepo) Get(ctx context.Context, id uuid.UUID) (upload.As
 func (r *AdminMediaUploadRepo) ClaimWrite(ctx context.Context, id uuid.UUID, adminID int64) error {
 	n, err := r.q.ClaimAdminMediaUploadWrite(ctx, sqlcgen.ClaimAdminMediaUploadWriteParams{ID: pgUUID(id), AdminID: adminID})
 	return uploadRows(n, err, "领取上传会话")
+}
+
+func (r *AdminMediaUploadRepo) SetMultipart(ctx context.Context, id uuid.UUID, adminID int64, uploadID string) error {
+	n, err := r.q.SetAdminMediaUploadMultipart(ctx, sqlcgen.SetAdminMediaUploadMultipartParams{
+		ID: pgUUID(id), AdminID: adminID, MultipartUploadID: uploadID,
+	})
+	return uploadRows(n, err, "登记分片上传")
+}
+
+func (r *AdminMediaUploadRepo) TouchPart(ctx context.Context, id uuid.UUID, adminID int64, expiresAt time.Time) error {
+	n, err := r.q.TouchAdminMediaUploadPart(ctx, sqlcgen.TouchAdminMediaUploadPartParams{
+		ID: pgUUID(id), AdminID: adminID, ExpiresAt: pgtype.Timestamptz{Time: expiresAt, Valid: true},
+	})
+	return uploadRows(n, err, "领取分片写入")
 }
 
 func (r *AdminMediaUploadRepo) MarkUploaded(ctx context.Context, id uuid.UUID, adminID int64) error {

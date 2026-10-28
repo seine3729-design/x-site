@@ -8,6 +8,7 @@ import { errorMessage } from '@/lib/http'
 import { cn } from '@/lib/utils'
 import { mediaUploadApi, transcodeJobApi, type MediaUpload, type MediaUploadPurpose } from './api'
 import { imagePreviewUrl } from './image-preview'
+import { PART_CONCURRENCY, uploadParts } from './multipart'
 import { compressionSummary, percentOf, transcodeProgressText, uploadProgressText, type CompressionMode } from './progress'
 
 type UploadState = 'idle' | 'preparing' | 'uploading' | 'processing' | 'ready' | 'failed'
@@ -512,11 +513,24 @@ export function VideoUploadControl({
       setDetail('')
       startedAt.current = Date.now()
       setNotice(`正在上传 ${bytes(file.size)}…`)
-      const session = await mediaUploadApi.create({ purpose, mime: file.type, size_bytes: file.size, episode_id: episodeID })
-      await mediaUploadApi.putContent(session.id, file, file.type, (loaded, total) => {
+      const session = await mediaUploadApi.create({ purpose, mime: file.type, size_bytes: file.size, episode_id: episodeID, multipart: true })
+      const onBytes = (loaded: number, total: number) => {
         setProgress(percentOf(loaded, total))
         setDetail(uploadProgressText({ loaded, total, elapsedMs: Date.now() - startedAt.current }))
-      })
+      }
+      if (session.part_size > 0) {
+        setNotice(`正在分片上传 ${bytes(file.size)}（${session.part_count} 片，最多 ${PART_CONCURRENCY} 路并行，单片失败自动重试）…`)
+        await uploadParts({
+          file,
+          partSize: session.part_size,
+          onProgress: onBytes,
+          send: (part, body, onPartProgress, signal) =>
+            mediaUploadApi.putPart(session.id, part.number, body, (loaded) => onPartProgress(loaded), signal),
+        })
+      } else {
+        // 服务端没有开启分片（不应发生在同一版本里）时退回整段上传
+        await mediaUploadApi.putContent(session.id, file, file.type, onBytes)
+      }
       setNotice('上传完成，正在提交转码…')
       setDetail('')
       const complete = await mediaUploadApi.complete(session.id, VIDEO_COMPLETE_TIMEOUT_MS)
@@ -566,7 +580,7 @@ export function VideoUploadControl({
         <FileVideo className='size-5 text-muted-foreground' aria-hidden />
         <div className='min-w-0 flex-1'>
           <p className='text-sm font-medium'>{label}</p>
-          <p className='text-xs text-muted-foreground'>源文件进入私有 video/source/；上传后自动转为 HLS m3u8。</p>
+          <p className='text-xs text-muted-foreground'>分片并行上传到私有入库桶，断网只重传失败的那一片；上传后自动转为 HLS m3u8。</p>
         </div>
         <Button type='button' variant='outline' className='h-10' disabled={disabled || busy} onClick={() => fileInput.current?.click()}>
           {busy ? <LoaderCircle className='animate-spin' /> : <Upload />} 选择视频

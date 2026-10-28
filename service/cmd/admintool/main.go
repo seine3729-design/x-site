@@ -2,6 +2,7 @@
 //
 //	printf '%s\n' "$ADMIN_PASSWORD" | admintool create-admin -username root -role superadmin
 //	admintool migrate
+//	printf '%s\n' "$OLD_MEDIA_KEKS" | admintool rewrap-media-keys [-apply]
 //
 // 本地开发：printf '%s\n' "$PW" | ./dev.sh go run ./cmd/admintool create-admin -username root -role superadmin
 // 密码只从标准输入读取，不出现在命令行参数、进程列表与 shell 历史中。
@@ -35,7 +36,12 @@ const usage = `用法：
 
   admintool migrate
   执行嵌入在本二进制里的 Goose 业务迁移与 River 官方迁移（只升不降）。production 禁用
-  AUTO_MIGRATE，发布流程用这条命令在 API 和 worker 启动之前把两套 schema 升到位（docs/11 X0-6）`
+  AUTO_MIGRATE，发布流程用这条命令在 API 和 worker 启动之前把两套 schema 升到位（docs/11 X0-6）
+
+  admintool rewrap-media-keys [-apply]
+  把 media_key 里不是 MEDIA_KEKS 第一把 KEK 包装的 HLS 内容密钥，解开后改用第一把重新包装
+  （KEK 轮换、本地数据导入线上后用；docs/14 第 8 节）。旧 KEK 从标准输入读一行 kid:secret[,…]，
+  旧 KEK 已追加在 MEDIA_KEKS 后面时给空行。默认只预览；加 -apply 才写库（单个事务）`
 
 func main() {
 	if err := run(os.Args[1:], os.Stdin); err != nil {
@@ -57,6 +63,8 @@ func run(args []string, stdin io.Reader) error {
 		return createAdmin(args, stdin)
 	case "migrate":
 		return migrate(args)
+	case "rewrap-media-keys":
+		return rewrapMediaKeys(args, stdin, os.Stdout)
 	default:
 		return errors.New(usage)
 	}

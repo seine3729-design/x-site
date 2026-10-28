@@ -73,12 +73,12 @@ const createAdminMediaUpload = `-- name: CreateAdminMediaUpload :one
 
 INSERT INTO admin_media_upload (
     id, admin_id, provider_id, provider_endpoint, provider_region, provider_bucket, provider_path_style, provider_path_prefix,
-    purpose, kind, mime, image_format, size_bytes, source_key, output_key, episode_id, expires_at
+    purpose, kind, mime, image_format, size_bytes, source_key, output_key, episode_id, expires_at, part_size
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8,
-    $9, $10, $11, $12, $13, $14, $15, $16, $17
+    $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
 )
-RETURNING id, admin_id, purpose, kind, mime, image_format, size_bytes, source_key, output_key, episode_id, transcode_job_id, status, progress, attempts, error, expires_at, created_at, updated_at, provider_id, provider_endpoint, provider_region, provider_bucket, provider_path_style, provider_path_prefix
+RETURNING id, admin_id, purpose, kind, mime, image_format, size_bytes, source_key, output_key, episode_id, transcode_job_id, status, progress, attempts, error, expires_at, created_at, updated_at, provider_id, provider_endpoint, provider_region, provider_bucket, provider_path_style, provider_path_prefix, part_size, multipart_upload_id
 `
 
 type CreateAdminMediaUploadParams struct {
@@ -99,6 +99,7 @@ type CreateAdminMediaUploadParams struct {
 	OutputKey          string
 	EpisodeID          pgtype.Int8
 	ExpiresAt          pgtype.Timestamptz
+	PartSize           int64
 }
 
 // 运营后台媒体上传会话：图片在浏览器转码后写入 img/；视频先写私有 video/source/，再异步转 HLS。
@@ -121,6 +122,7 @@ func (q *Queries) CreateAdminMediaUpload(ctx context.Context, arg CreateAdminMed
 		arg.OutputKey,
 		arg.EpisodeID,
 		arg.ExpiresAt,
+		arg.PartSize,
 	)
 	var i AdminMediaUpload
 	err := row.Scan(
@@ -148,6 +150,8 @@ func (q *Queries) CreateAdminMediaUpload(ctx context.Context, arg CreateAdminMed
 		&i.ProviderBucket,
 		&i.ProviderPathStyle,
 		&i.ProviderPathPrefix,
+		&i.PartSize,
+		&i.MultipartUploadID,
 	)
 	return i, err
 }
@@ -207,7 +211,7 @@ func (q *Queries) FailAdminVideoUpload(ctx context.Context, arg FailAdminVideoUp
 }
 
 const getAdminMediaUpload = `-- name: GetAdminMediaUpload :one
-SELECT id, admin_id, purpose, kind, mime, image_format, size_bytes, source_key, output_key, episode_id, transcode_job_id, status, progress, attempts, error, expires_at, created_at, updated_at, provider_id, provider_endpoint, provider_region, provider_bucket, provider_path_style, provider_path_prefix FROM admin_media_upload WHERE id = $1
+SELECT id, admin_id, purpose, kind, mime, image_format, size_bytes, source_key, output_key, episode_id, transcode_job_id, status, progress, attempts, error, expires_at, created_at, updated_at, provider_id, provider_endpoint, provider_region, provider_bucket, provider_path_style, provider_path_prefix, part_size, multipart_upload_id FROM admin_media_upload WHERE id = $1
 `
 
 func (q *Queries) GetAdminMediaUpload(ctx context.Context, id pgtype.UUID) (AdminMediaUpload, error) {
@@ -238,6 +242,8 @@ func (q *Queries) GetAdminMediaUpload(ctx context.Context, id pgtype.UUID) (Admi
 		&i.ProviderBucket,
 		&i.ProviderPathStyle,
 		&i.ProviderPathPrefix,
+		&i.PartSize,
+		&i.MultipartUploadID,
 	)
 	return i, err
 }
@@ -263,7 +269,7 @@ func (q *Queries) LinkAdminEpisodeUpload(ctx context.Context, arg LinkAdminEpiso
 }
 
 const listExpiredAdminMediaUploads = `-- name: ListExpiredAdminMediaUploads :many
-SELECT id, admin_id, purpose, kind, mime, image_format, size_bytes, source_key, output_key, episode_id, transcode_job_id, status, progress, attempts, error, expires_at, created_at, updated_at, provider_id, provider_endpoint, provider_region, provider_bucket, provider_path_style, provider_path_prefix FROM admin_media_upload
+SELECT id, admin_id, purpose, kind, mime, image_format, size_bytes, source_key, output_key, episode_id, transcode_job_id, status, progress, attempts, error, expires_at, created_at, updated_at, provider_id, provider_endpoint, provider_region, provider_bucket, provider_path_style, provider_path_prefix, part_size, multipart_upload_id FROM admin_media_upload
 WHERE expires_at <= now()
   AND (purpose = 'episode_video' OR status NOT IN ('queued', 'running'))
 ORDER BY expires_at
@@ -307,6 +313,8 @@ func (q *Queries) ListExpiredAdminMediaUploads(ctx context.Context, pageLimit in
 			&i.ProviderBucket,
 			&i.ProviderPathStyle,
 			&i.ProviderPathPrefix,
+			&i.PartSize,
+			&i.MultipartUploadID,
 		); err != nil {
 			return nil, err
 		}
@@ -370,11 +378,32 @@ func (q *Queries) RequeueAdminVideoUpload(ctx context.Context, arg RequeueAdminV
 	return result.RowsAffected(), nil
 }
 
+const setAdminMediaUploadMultipart = `-- name: SetAdminMediaUploadMultipart :execrows
+UPDATE admin_media_upload
+SET multipart_upload_id = $1::text, updated_at = now()
+WHERE id = $2 AND admin_id = $3 AND status = 'created' AND part_size > 0 AND multipart_upload_id = ''
+`
+
+type SetAdminMediaUploadMultipartParams struct {
+	MultipartUploadID string
+	ID                pgtype.UUID
+	AdminID           int64
+}
+
+// 建会话后登记私有入库桶上的分片上传 ID；只能登记一次，且只对声明了分片大小的新会话生效。
+func (q *Queries) SetAdminMediaUploadMultipart(ctx context.Context, arg SetAdminMediaUploadMultipartParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setAdminMediaUploadMultipart, arg.MultipartUploadID, arg.ID, arg.AdminID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const startAdminVideoUpload = `-- name: StartAdminVideoUpload :one
 UPDATE admin_media_upload
 SET status = 'running', progress = 0, attempts = attempts + 1, error = '', updated_at = now()
 WHERE id = $1 AND purpose = 'ad_video' AND status IN ('queued', 'running')
-RETURNING id, admin_id, purpose, kind, mime, image_format, size_bytes, source_key, output_key, episode_id, transcode_job_id, status, progress, attempts, error, expires_at, created_at, updated_at, provider_id, provider_endpoint, provider_region, provider_bucket, provider_path_style, provider_path_prefix
+RETURNING id, admin_id, purpose, kind, mime, image_format, size_bytes, source_key, output_key, episode_id, transcode_job_id, status, progress, attempts, error, expires_at, created_at, updated_at, provider_id, provider_endpoint, provider_region, provider_bucket, provider_path_style, provider_path_prefix, part_size, multipart_upload_id
 `
 
 func (q *Queries) StartAdminVideoUpload(ctx context.Context, id pgtype.UUID) (AdminMediaUpload, error) {
@@ -405,8 +434,33 @@ func (q *Queries) StartAdminVideoUpload(ctx context.Context, id pgtype.UUID) (Ad
 		&i.ProviderBucket,
 		&i.ProviderPathStyle,
 		&i.ProviderPathPrefix,
+		&i.PartSize,
+		&i.MultipartUploadID,
 	)
 	return i, err
+}
+
+const touchAdminMediaUploadPart = `-- name: TouchAdminMediaUploadPart :execrows
+UPDATE admin_media_upload
+SET status = 'uploading', error = '', expires_at = $1::timestamptz, updated_at = now()
+WHERE id = $2 AND admin_id = $3 AND status IN ('created', 'uploading')
+  AND multipart_upload_id <> '' AND expires_at > now()
+`
+
+type TouchAdminMediaUploadPartParams struct {
+	ExpiresAt pgtype.Timestamptz
+	ID        pgtype.UUID
+	AdminID   int64
+}
+
+// 收到一片前领取写入权并顺延过期时间：只要分片还在陆续到达，会话就保持「上传中」不过期；
+// 停传超过会话时长的，交给清理任务放弃分片上传。并发的多片各自顺延，互不冲突。
+func (q *Queries) TouchAdminMediaUploadPart(ctx context.Context, arg TouchAdminMediaUploadPartParams) (int64, error) {
+	result, err := q.db.Exec(ctx, touchAdminMediaUploadPart, arg.ExpiresAt, arg.ID, arg.AdminID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const updateAdminVideoUploadProgress = `-- name: UpdateAdminVideoUploadProgress :execrows

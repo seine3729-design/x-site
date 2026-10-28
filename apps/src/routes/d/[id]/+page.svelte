@@ -92,7 +92,12 @@
 	<!-- 顶部：模糊封面作氛围背景，向下渐隐到页面底色 -->
 	<div class="relative isolate overflow-hidden">
 		<div class="absolute inset-0 -z-10" aria-hidden="true">
-			<Poster cover={drama.cover_landscape || drama.cover_portrait} title={drama.title} class="absolute! inset-0 size-full scale-110 opacity-45 blur-3xl" />
+			<Poster
+				cover={drama.cover_landscape || drama.cover_portrait}
+				title={drama.title}
+				class="absolute! inset-0 size-full scale-110 opacity-45 blur-3xl"
+				blurred
+			/>
 			<div class="absolute inset-0 bg-gradient-to-b from-canvas/40 via-canvas/75 to-canvas"></div>
 		</div>
 

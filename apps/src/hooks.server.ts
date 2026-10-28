@@ -29,12 +29,12 @@ const WINDOW_MS = 60_000;
 const STATIC_FILE = /\.(?:svg|png|jpe?g|gif|webp|ico)$/;
 
 /**
- * 产物走 CDN 时补一条**不带 crossorigin** 的预连接（填进 app.html 的 %xsite.preconnect%）。
+ * 产物走 CDN 时写一条**不带 crossorigin** 的预连接（填进 app.html 的 %xsite.preconnect%），整页只有这一条。
  *
- * 只补这一条：`paths.assets` 非空时 SvelteKit 自己已经往 `<head>` 写了两条 preconnect，但两条都带
- * `crossorigin`。浏览器的连接池按「是否带 CORS」分开 —— 模块脚本与样式表一律按 CORS 模式取（那两条
- * 已经覆盖），而 `<link rel=icon>` 与直接用 `<img>` 取 CDN 上的图片是 no-cors，少了这一条还要再
- * 握一次手。admin 与 feedback 的入口 HTML 同样各写两条，原因一样。
+ * 浏览器的连接池按「是否带 CORS」分开：模块脚本按 CORS 模式取，那条连接由紧跟在后面的 modulepreload
+ * 立刻建起来，再写带 crossorigin 的 preconnect 是多余的（Lighthouse 判为「未使用」，根 layout 原来那两条
+ * 已删）。`<link rel=icon>` 与直接用 `<img>` 取 CDN 原图（首屏大图在缩放入口不可用时的退路）是 no-cors，
+ * 走另一条连接，这一条替它们提前握手。样式表已内联进 HTML，不再从 CDN 取。
  */
 const CDN_PRECONNECT = ((): string => {
 	if (!CDN_ASSET_PREFIX) {
@@ -147,6 +147,13 @@ export const handle: Handle = async ({ event, resolve }) => {
 
 	// 被挡下的请求（403 / 429）返回的是纯文本，不读站点配置：既没必要，也不该让被限流的请求回源打后端。
 	const envPools = domainPools(null);
+
+	// /cdn-cgi/* 由 Cloudflare 在边缘处理（图片缩放 /cdn-cgi/image/，docs/08 第 5 节），走到源站说明当前域名
+	// 没接 Cloudflare 或没开 Transformations：直接回 404，不渲染错误页、不占页面限流配额。
+	// 浏览器收到非 2xx 后改用原图，并在本页停用缩放（#lib/media/blob-image.ts）。
+	if (pathname.startsWith('/cdn-cgi/')) {
+		return applyDocumentHeaders(plain(messages['errorPage.notFound'], 404), pathname, envPools);
+	}
 
 	if (isApi && isWrite && !userAgent) {
 		return applyDocumentHeaders(plain(messages['http.missingClient'], 403), pathname, envPools);

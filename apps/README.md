@@ -11,23 +11,21 @@ bun run dev
 
 浏览器打开 http://localhost:3001 。`apps` 使用 3000，两边可以同时开。
 
-开发、测试、线上分别读取 `.env.development`、`.env.test`、`.env.production`。
+开发和线上分别读取 `.env.development`、`.env.production`。
 
 ```bash
 bun run build:dev
-bun run build:test
 bun run build:prod
-bun run start:test
 bun run start
 ```
 
 ## 环境文件
 
-密钥和某一套环境的差异不要写进上面三个文件。本地放 `.env.local`，某一套的差异放 `.env.development.local`、`.env.test.local`、`.env.production.local`。这几个文件不会提交。
+密钥和某一套环境的差异不要写进上面两个文件。本地放 `.env.local`，某一套的差异放 `.env.development.local`、`.env.production.local`。这几个文件不会提交。
 
 加载顺序是环境文件、`.env.local`、再是 `.env.<环境>.local`，后面的覆盖前面的。`scripts/with-env.ts` 负责载入，并强制把 `APP_ENV` 和 `PUBLIC_APP_ENV` 写成当前命令对应的环境。Vite 不再自己读 `.env.*`。
 
-`PUBLIC_APP_ENV` 和 `PUBLIC_SITE_URL` 在构建时写进浏览器脚本。服务端的 `APP_ENV`、配额和 `EDGE_SHARED_SECRET` 在进程启动时读取。`build:test` 之后要配 `start:test`，`build` 之后要配 `start`。
+`PUBLIC_APP_ENV` 和 `PUBLIC_SITE_URL` 在构建时写进浏览器脚本。服务端的 `APP_ENV`、配额和 `EDGE_SHARED_SECRET` 在进程启动时读取。`build:dev` 之后要配 `start:dev`，`build` / `build:prod` 之后要配 `start` / `start:prod`。
 
 线上不配置 `PUBLIC_SITE_URL`。需要绝对地址时用当次请求的 Host。静态资源要走 CDN 时，把 `CDN_ASSET_PREFIX` 设成 `https://` 开头的域名。
 
@@ -49,7 +47,9 @@ BFF 只透传前台接口 `/api/v1/*`；`/api/admin/*` 与其他 `/api/*` 在前
 ## 静态产物与 CDN
 
 带内容哈希的产物（`build/client/_app/immutable/**`）由浏览器**直接从 CDN 加载**：页面里写的就是
-`<CDN_ASSET_PREFIX>/_app/immutable/...`。`CDN_ASSET_PREFIX` 是**构建期**变量，一个值管三处：
+`<CDN_ASSET_PREFIX>/_app/immutable/...`。SvelteKit 的版本轮询同样使用这个基址，因此构建生成的
+`build/client/_app/version.json` 也会发布到 `<CDN_ASSET_PREFIX>/_app/version.json`，并在全部哈希产物成功后最后覆盖。
+`CDN_ASSET_PREFIX` 是**构建期**变量，一个值管三处：
 
 | 用在哪 | 作用 |
 | --- | --- |
@@ -59,8 +59,8 @@ BFF 只透传前台接口 `/api/v1/*`；`/api/admin/*` 与其他 `/api/*` 在前
 
 留空则产物走同源相对地址，`bun run build` + `bun run start` 可以独立跑起来，本机开发不需要 CDN。
 
-**不上 CDN 的三样**：`/service-worker.js`（必须同源才有 `/` 作用域）、`/icons/`、`_app/version.json`
-（客户端轮询新版本用，不能长缓存）。它们由应用容器直发，带 adapter 压好的 `.br` / `.gz`。
+**仍由应用容器同源提供的两样**：`/service-worker.js`（必须同源才有 `/` 作用域）与 `/icons/`。
+`_app/version.json` 会随 `paths.assets` 使用 CDN 基址，由发布任务最后覆盖；它不能使用 immutable 长缓存。
 
 CSP 的来源表达式里带路径时，不以 `/` 结尾就是**精确匹配那一个路径**（CSP3 §6.6.2.6），
 所以 `https://cdn.example.com/apps` 必须补成 `.../apps/`，否则产物全被自己的 CSP 拦掉。
@@ -100,7 +100,7 @@ SvelteKit 只要扫到自己管的 SW 入口文件、而 `paths.assets` 又非�
 
 | 服务 | 作用 | 生命周期 |
 | --- | --- | --- |
-| `assets` | `scripts/upload-assets.ts` 把 `build/client/_app/immutable` 推到 R2 | 一次性，失败就不放流量进来 |
+| `assets` | `scripts/upload-assets.ts` 先发布 `build/client/_app/immutable`，成功后覆盖 `_app/version.json` | 一次性，任一步失败都不放流量进来 |
 | `apps` | Bun SSR + BFF，监听 3001 | 常驻 |
 
 ```
@@ -116,7 +116,7 @@ SvelteKit 只要扫到自己管的 SW 入口文件、而 `paths.assets` 又非�
 | `R2_BUCKET` | 是 | `duanju666` |
 | `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` | 是 | R2 访问密钥，权限按「只能读写这一个桶」最小化 |
 | `EDGE_SHARED_SECRET` | 建议 | 设上之后才校验 `x-edge-secret`，否则任何人都能伪造地区头 |
-| `APPS_XFF_DEPTH` | 否 | 默认 `2`（Cloudflare 橙云 + Traefik）。前面没有 Cloudflare 时改成 `1` |
+| `APPS_XFF_DEPTH` | 否 | 默认 `1`：当前 Dokploy + Cloudflare 实测传给应用的 `X-Forwarded-For` 只有 1 段。代理拓扑变化后按实际收到的地址段数调整 |
 | `CDN_HOST` | 否 | 默认 `cdn.duanju66.cc` |
 | `CDN_ASSETS_PREFIX` | 否 | 默认 `apps`。既是 R2 的对象键前缀、也拼进构建参数 `CDN_ASSET_PREFIX` |
 | `IMAGE_BASE_URLS` | 否 | 图片线路域名池，默认 `https://cdn.duanju66.cc`。生产 CSP 的 `img-src` 从这里生成 |
@@ -128,9 +128,9 @@ SvelteKit 只要扫到自己管的 SW 入口文件、而 `paths.assets` 又非�
 - **域名二选一**：要么用文件里的 Traefik 标签（已配好 HTTPS、`www` → 主域名 301、80 → 443、`x-edge-secret` 注入），要么删掉 `labels` 段改用 Dokploy 的 Domains 标签页。两边都配会生成重复 router。
 - **R2 的 CORS 必须包含站点域名**：产物是 `<script type="module">`，模块脚本一律按 CORS 模式取，没有 `Access-Control-Allow-Origin` 就一行都跑不起来。`deploy/prod/scripts/r2-setup.sh` 已经把站点域名、别名和 CDN 域名自己都列进白名单，改域名后重跑一次。
 - **换 CDN 域名必须重新构建**：`CDN_ASSET_PREFIX` 是构建期写进 HTML、CSP 与 Service Worker 的，改运行期环境变量不生效。
-- **`APPS_XFF_DEPTH` 配小了会 500**：报错是 `XFF_DEPTH is 2, but only found 1 addresses`。配大了则把边缘节点 IP 当成客户端，后端限流失效。顺带一提，设了 `ADDRESS_HEADER` 之后**不经反向代理直接打容器**（没有 `X-Forwarded-For`）也会 500，这是预期的 —— 健康检查走 `/api/v1/health`，那条路径不取客户端 IP。
+- **`APPS_XFF_DEPTH` 大于实际地址数会 500**：当前 Dokploy + Cloudflare 实测应用收到 1 段 `X-Forwarded-For`，所以设 `1`；设 `2` 会报 `XFF_DEPTH is 2, but only found 1 addresses`。若以后代理链传入多段但深度仍过小，才会把边缘节点 IP 当成客户端、让后端限流失效。设了 `ADDRESS_HEADER` 后不经反向代理直接打容器（没有 `X-Forwarded-For`）也会 500，这是预期的；健康检查走 `/api/v1/health`，不取客户端 IP。
 - **`RATE_LIMIT_*`、`APP_ENV`、`CDN_ASSET_PREFIX` 在容器环境变量里设了不生效**：`scripts/with-env.ts` 会用镜像里 `.env.production`（以及构建期写入的 `.env.production.local`）的同名值覆盖。要改配额就改那个文件再重新构建。
 - **`assets` 和 `apps` 必须共用同一次构建**（编排里是同一个 `image` + 同一段 `build`）。两次独立构建的内容哈希对不上时，页面会去 CDN 取一个不存在的文件名，而且只在生产复现。
-- **上传不删远端旧对象**，老页面引用的 chunk 才不会在发布瞬间 404。清理靠 R2 的生命周期规则（`r2-setup.sh` 里 `apps/` 前缀 90 天过期）。
+- **上传不删远端旧哈希对象**，老页面引用的 chunk 才不会在发布瞬间 404；`version.json` 是例外，每次发布都在最后覆盖。Cloudflare 对精确路径 `/apps/_app/version.json` 绕过缓存，其他清理由 `r2-setup.sh` 的 `apps/` 前缀 90 天生命周期规则负责。
 - **不要给 Traefik 加 compress 中间件**：HTML 由 `src/lib/server/compress.ts` 流式压（br q5），容器里剩下的静态文件带 Brotli 11 预压缩文件，产物的压缩由 CDN 边缘做。再套一层只会降档。
 - Traefik 默认只开 HTTP/1.1 与 HTTP/2，HTTP/3 要在 Dokploy 的 Traefik 配置里单独开并放通 443/udp。

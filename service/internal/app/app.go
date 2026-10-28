@@ -516,6 +516,8 @@ func NewAPI(ctx context.Context, cfg config.Config) (*API, error) {
 		Uploads: &adminuploadhttp.Handlers{
 			Svc: adminUploadSvc, Media: mediaSvc, Stores: uploadStores,
 			Source: stageStore.Bucket(cfg.Media.SourceBucket), Images: imageOpt,
+			// 全进程最多同时缓冲 24 个视频分片（每片 5 MiB，约 120 MiB）：够好几个运营同时 6 路并发上传
+			PartSlots: make(chan struct{}, 24),
 		},
 		Feedback: &adminfeedbackhttp.Handlers{Svc: fbManage, Topics: fbTopics, Keys: fbIntake},
 		PublicFeedback: &publicfeedbackhttp.Handlers{

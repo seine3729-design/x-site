@@ -133,6 +133,57 @@ func TestAnalyticsRepo_Rollup(t *testing.T) {
 	}
 }
 
+// 注册墙曝光口径（W4-1，docs/04 C.6）走真实 PostgreSQL：只数 step=show（老数据没有 step 按曝光算），
+// 点击不算曝光，同设备同集重复曝光只算一次。只扫自己造的设备，不受共享库里其它事件影响。
+func TestAnalyticsRepo_RegWallViewsExpr(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	repo := NewAnalyticsRepo(pool)
+
+	uniq := time.Now().UnixNano()
+	devA := fmt.Sprintf("it-rw-%d-a", uniq)
+	devB := fmt.Sprintf("it-rw-%d-b", uniq)
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM event_raw WHERE device_id = ANY($1)`, []string{devA, devB})
+	})
+
+	ep1, ep2, ep3 := uniq%1_000_000+8_000_000, uniq%1_000_000+8_000_001, uniq%1_000_000+8_000_002
+	now := time.Now().UTC()
+	mk := func(dev string, ep int64, props string) analytics.Event {
+		e := ep
+		return analytics.Event{OccurredAt: now, Type: "register_wall", DeviceID: dev, EpisodeID: &e, Client: "web", Props: []byte(props)}
+	}
+	if _, err := repo.InsertEvents(ctx, []analytics.Event{
+		mk(devA, ep1, `{"step":"show"}`),
+		mk(devA, ep1, `{"step":"show"}`),  // 同设备同集重复曝光：只算一次
+		mk(devA, ep1, `{"step":"click"}`), // 点击不算曝光
+		mk(devA, ep2, `{"step":"show"}`),
+		mk(devB, ep1, `{"step":"show"}`),
+		mk(devB, ep3, `{}`), // 没带 step 的老数据按曝光算
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var views int64
+	if err := pool.QueryRow(ctx, `SELECT `+regWallViewsExpr+` FROM event_raw WHERE device_id = ANY($1)`,
+		[]string{devA, devB}).Scan(&views); err != nil {
+		t.Fatal(err)
+	}
+	if views != 4 {
+		t.Errorf("注册墙曝光应为 4（A·集1、A·集2、B·集1、B·集3），得 %d", views)
+	}
+}
+
+// 日表定稿必须用上面那条曝光口径，而不是数全部 register_wall 事件（那会把点击也算成曝光）。
+func TestMetricDailySQL_UsesRegWallViewsExpr(t *testing.T) {
+	if !strings.Contains(metricDailySQL, regWallViewsExpr) {
+		t.Error("metric_daily 的 reg_wall_views 没有使用 regWallViewsExpr 口径")
+	}
+	if strings.Contains(metricDailySQL, `count(*) FILTER (WHERE event_type = 'register_wall')`) {
+		t.Error("metric_daily 仍在数全部 register_wall 事件")
+	}
+}
+
 // 分区维护（S4-2）：EnsurePartitions 为远未来日滚动创建分区，并能写入该日事件（验证边界格式）。
 func TestAnalyticsRepo_EnsurePartition(t *testing.T) {
 	pool := testPool(t)

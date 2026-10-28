@@ -25,6 +25,8 @@ export type SiteData = {
 	footerPages: { slug: string; title: string }[];
 	addresses: SiteAddresses | null;
 	imageBases: string[];
+	/** 可以经 /cdn-cgi/image/ 缩放的图片线路 origin（部署配置 IMAGE_RESIZE_ORIGINS），空数组表示不缩放 */
+	resizeOrigins: string[];
 	announcements: Announcement[];
 };
 

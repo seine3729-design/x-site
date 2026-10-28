@@ -76,6 +76,21 @@
 		}
 	});
 
+	/** 从回家的路打开某个地址：记一次域名切换（Web 没有自动切换，用户在这里换入口，docs/09 第 4.3 节） */
+	function opened(url: string, probe: Probe) {
+		let to: string;
+		try {
+			to = new URL(url).host;
+		} catch {
+			return;
+		}
+		const from = location.host;
+		// 地址在新标签页打开，本页不卸载，动态导入来得及
+		void import('#lib/analytics/runtime.ts').then((analytics) =>
+			analytics.track('domain_switch', { props: { from, to, reason: 'way_home', probe } })
+		);
+	}
+
 	async function copy(url: string) {
 		try {
 			await navigator.clipboard.writeText(url);
@@ -162,6 +177,7 @@
 								target="_blank"
 								rel="noopener noreferrer"
 								class="mt-1.5 block truncate text-base font-bold tracking-tight tabular hover:text-brand-fg sm:text-lg"
+								onclick={() => opened(item.url, status)}
 							>
 								{host(item.url)}
 							</a>
@@ -176,6 +192,7 @@
 								target="_blank"
 								rel="noopener noreferrer"
 								class="btn btn-sm gap-1.5 {index === 0 ? 'btn-primary' : 'btn-ghost'}"
+								onclick={() => opened(item.url, status)}
 							>
 								{i18n.t('wayHome.open')}
 								<Icon name="arrow-right" size={15} class="rtl:rotate-180" />

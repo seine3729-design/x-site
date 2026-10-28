@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-const environments = ['development', 'test', 'production'] as const;
+const environments = ['development', 'production'] as const;
 
 type AppEnvironment = (typeof environments)[number];
 
@@ -52,7 +52,7 @@ const separator = process.argv.indexOf('--');
 const command = separator === -1 ? [] : process.argv.slice(separator + 1);
 
 if (!isAppEnvironment(appEnv) || command.length === 0) {
-	console.error('用法: bun scripts/with-env.ts <development|test|production> -- <命令>');
+	console.error('用法: bun scripts/with-env.ts <development|production> -- <命令>');
 	process.exit(1);
 }
 

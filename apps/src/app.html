@@ -7,7 +7,7 @@
 		<meta name="color-scheme" content="dark light" />
 		<meta name="theme-color" content="#0b0b0f" />
 		<meta name="format-detection" content="telephone=no" />
-		<!-- 静态产物走 CDN 时在这里预连它（两条，见 hooks.server.ts）；同源部署时是空串 -->
+		<!-- 静态产物走 CDN 时在这里预连它（只此一条，见 hooks.server.ts）；同源部署时是空串 -->
 		%xsite.preconnect%
 		<!--
 			首帧前定深浅色，避免闪烁。默认值 data-scheme 由 SSR 按后台「白标 → 配色」给出；

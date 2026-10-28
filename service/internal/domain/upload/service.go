@@ -15,7 +15,11 @@ import (
 const (
 	imageMaxBytes = 15 << 20
 	videoMaxBytes = 4 << 30
-	sessionTTL    = 15 * time.Minute
+	// sessionTTL 是会话时长。分片上传每收到一片就从当时起再顺延一个 sessionTTL，所以它约束的是「停传多久算放弃」。
+	sessionTTL = 15 * time.Minute
+	// VideoPartSize 是视频分片上传的分片大小。R2 要求除最后一片外每片大小一致且不小于 5 MiB（S3 只要求下限）。
+	// 取下限是为了让常见的几十 MB 短剧分集也能切出足够多的片并发上传；4 GiB 上限约 820 片，远低于协议的 10000 片。
+	VideoPartSize int64 = 5 << 20
 )
 
 var (
@@ -49,6 +53,9 @@ func (s *Service) Init(ctx context.Context, adminID int64, in InitInput) (Asset,
 	if err := validateInput(kind, in); err != nil {
 		return Asset{}, err
 	}
+	if in.Multipart && kind != KindVideo {
+		return Asset{}, errs.ErrBadRequest.WithMessage("只有视频支持分片上传")
+	}
 	id := uuid.NewV7()
 	now := s.now().UTC()
 	a := Asset{
@@ -64,7 +71,86 @@ func (s *Service) Init(ctx context.Context, adminID int64, in InitInput) (Asset,
 	} else {
 		a.SourceKey = path.Join("video", "source", a.ID.String()+videoExtension(a.MIME))
 	}
+	if in.Multipart {
+		a.PartSize = VideoPartSize
+	}
 	return s.repo.Create(ctx, a)
+}
+
+// AttachMultipart 登记建会话后在私有入库桶上开启的分片上传。
+func (s *Service) AttachMultipart(ctx context.Context, id uuid.UUID, adminID int64, uploadID string) error {
+	if strings.TrimSpace(uploadID) == "" {
+		return fmt.Errorf("登记分片上传: UploadId 为空")
+	}
+	return s.repo.SetMultipart(ctx, id, adminID, uploadID)
+}
+
+// ClaimPart 校验第 number 片能否写入，并把会话置为 uploading、从现在起顺延会话时长。
+// 片号与长度都按会话登记的文件大小推算，浏览器不能写出越界或长度不符的分片。
+// 同一片可以重复提交（浏览器重试），对象存储以最后一次为准。
+func (s *Service) ClaimPart(ctx context.Context, id uuid.UUID, adminID int64, number int32, size int64) (Asset, error) {
+	a, err := s.GetOwned(ctx, id, adminID)
+	if err != nil {
+		return Asset{}, err
+	}
+	if !a.Multipart() || a.MultipartUploadID == "" {
+		return Asset{}, errs.ErrBadRequest.WithMessage("该上传会话不是分片上传")
+	}
+	if a.Status != StatusCreated && a.Status != StatusUploading {
+		return Asset{}, errs.ErrBadRequest.WithMessage("该上传会话已经结束，请重新选择文件")
+	}
+	now := s.now()
+	if !a.ExpiresAt.After(now) {
+		return Asset{}, errExpired
+	}
+	want := a.PartLength(number)
+	if want == 0 {
+		return Asset{}, errs.ErrBadRequest.WithMessage(fmt.Sprintf("分片序号应在 1–%d 之间", a.PartCount()))
+	}
+	if size != want {
+		return Asset{}, errs.ErrBadRequest.WithMessage(fmt.Sprintf("第 %d 片应为 %d 字节，实际 %d 字节", number, want, size))
+	}
+	expiresAt := now.Add(sessionTTL)
+	if err := s.repo.TouchPart(ctx, id, adminID, expiresAt); err != nil {
+		return Asset{}, err
+	}
+	a.Status, a.ExpiresAt = StatusUploading, expiresAt
+	return a, nil
+}
+
+// CheckParts 核对对象存储收到的分片：片号 1…N 一片不少、没有多余，长度逐片与推算一致。
+// 缺片时只报错、不改会话状态，浏览器补传缺的那几片后可以再次提交完成。
+func (a Asset) CheckParts(parts []UploadedPart) error {
+	count := a.PartCount()
+	if count == 0 {
+		return errs.ErrBadRequest.WithMessage("该上传会话不是分片上传")
+	}
+	got := make(map[int32]int64, len(parts))
+	for _, p := range parts {
+		if p.Number < 1 || p.Number > count {
+			return errs.ErrBadRequest.WithMessage(fmt.Sprintf("收到了越界的第 %d 片，请重新选择文件", p.Number))
+		}
+		got[p.Number] = p.Size
+	}
+	var missing []string
+	for n := int32(1); n <= count; n++ {
+		size, ok := got[n]
+		if !ok {
+			missing = append(missing, fmt.Sprint(n))
+			continue
+		}
+		if size != a.PartLength(n) {
+			return errs.ErrBadRequest.WithMessage(fmt.Sprintf("第 %d 片的长度与文件大小不符，请重新上传这一片", n))
+		}
+	}
+	if len(missing) > 0 {
+		shown := missing
+		if len(shown) > 5 {
+			shown = append(shown[:5:5], "…")
+		}
+		return errs.ErrBadRequest.WithMessage(fmt.Sprintf("还有 %d 片没有上传完成（第 %s 片）", len(missing), strings.Join(shown, "、")))
+	}
+	return nil
 }
 
 // GetOwned 返回当前管理员自己的会话，禁止猜测 UUID 读取其他运营人员的上传状态。
@@ -84,6 +170,9 @@ func (s *Service) ClaimWrite(ctx context.Context, id uuid.UUID, adminID int64) (
 	a, err := s.GetOwned(ctx, id, adminID)
 	if err != nil {
 		return Asset{}, err
+	}
+	if a.Multipart() {
+		return Asset{}, errs.ErrBadRequest.WithMessage("该上传会话使用分片上传，请刷新页面后重新选择文件")
 	}
 	if a.Status != StatusCreated {
 		return Asset{}, errs.ErrBadRequest.WithMessage("该上传会话已经使用")
