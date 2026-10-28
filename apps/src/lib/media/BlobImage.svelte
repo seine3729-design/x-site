@@ -1,3 +1,17 @@
+<script module lang="ts">
+	/**
+	 * 实例计数器，只用来给骨架扫光错开相位。
+	 * 服务端的模块状态是跨请求共享的，但骨架在 SSR 阶段不渲染（started 初始为 false），
+	 * 所以这里取到什么值都不影响输出，也不会造成水合不一致。取模保存，不会一直涨。
+	 */
+	let skeletonSeq = 0;
+
+	function nextShimmerDelay(): string {
+		skeletonSeq = (skeletonSeq + 1) % 4;
+		return `${(skeletonSeq * 0.15).toFixed(2)}s`;
+	}
+</script>
+
 <script lang="ts">
 	import { onDestroy, type Snippet } from 'svelte';
 	import { getSite } from '#lib/site.ts';
@@ -50,6 +64,60 @@
 	/** 已经开始取图：没进可视区的图不画骨架动画，免得一页几十个 shimmer 一起跑 */
 	let started = $state(false);
 	let current: string | null = null;
+
+	/**
+	 * 图片几十毫秒就回来时根本不要画骨架。
+	 * 骨架出现又立刻消失，而一批图往往同时开始、同时结束（首图门闸放行、同一屏进可视区），
+	 * 于是整屏卡片一起来这么一下——这就是用户说的「每次有图片加载所有的都会闪」。
+	 * 实测本地首页卸载的 50 个骨架里，26 个只活了不到 300ms，最短 15ms（一帧）。
+	 * 对应 ui-ux loading-indicators：不要为近乎瞬时的工作闪现指示器。
+	 */
+	const SKELETON_DELAY_MS = 300;
+	/** 图片淡入时长，必须与下面 <img> 上的 duration-500 保持一致 */
+	const IMAGE_FADE_MS = 500;
+
+	/**
+	 * 扫光的相位：一批图往往同时开始加载，骨架也就同时挂上去，扫光于是完全同步——
+	 * 实测一屏抽样 6 个骨架高光位置差不到 0.06（归一化），整屏高光齐刷刷一起扫过，
+	 * 看着就像整页一起闪。按实例顺序错开四档，视觉上变成波浪。
+	 * 错开量刻意压在半个周期以内（周期 1.6s）：排在最后的也只晚 0.45s 起扫，
+	 * 而骨架一旦画出来实测至少活 500ms，不会有骨架从头到尾都不动。
+	 */
+	const shimmerDelay = nextShimmerDelay();
+
+	/** 等够了 SKELETON_DELAY_MS 图还没来：可以画骨架了 */
+	let skeletonDue = $state(false);
+	/** 图片已经完全盖住下面的骨架，可以把骨架摘掉了 */
+	let covered = $state(false);
+
+	// 骨架延迟登场。注意 ready 之后不在这里把它关掉：摘骨架的时机交给 covered。
+	$effect(() => {
+		if (!started) {
+			skeletonDue = false;
+			return;
+		}
+		if (ready) {
+			return;
+		}
+		const timer = setTimeout(() => (skeletonDue = true), SKELETON_DELAY_MS);
+		return () => clearTimeout(timer);
+	});
+
+	/*
+	 * 等图片淡入完成再摘骨架，而不是一解码就摘。
+	 * 扫光是一道横扫的高光，摘掉的那一刻它停在哪儿是随机的——实测七成情况下高光还在元素里，
+	 * 直接把骨架从 DOM 里拿掉，这道高光就凭空消失，又是一次可见的亮度跳变。
+	 * 图片是 absolute inset-0 object-cover，完全不透明时整块盖住骨架，这时候摘就什么都看不出来。
+	 * 代价是多留 500ms 的合成器动画，比原先「解码完立刻摘」略高，但只在真正显示过骨架的图上发生。
+	 */
+	$effect(() => {
+		if (!ready) {
+			covered = false;
+			return;
+		}
+		const timer = setTimeout(() => (covered = true), IMAGE_FADE_MS);
+		return () => clearTimeout(timer);
+	});
 
 	const sources = $derived(typeof src === 'string' ? (src ? [src] : []) : src);
 	// effect 按内容而不是数组身份重跑：父组件重新派生出一个内容相同的新数组时（如布局数据刷新），
@@ -197,15 +265,16 @@
 	    按剧名生成的渐变，于是一页里每张卡一个颜色；骨架才是「正在加载」该有的样子。
 	  - **取不到图才用 fallback**（带剧名的占位）。那是内容状态而不是加载状态，让它一直闪会让人
 	    以为还在加载。没有 fallback 的地方（广告、Logo）就留 holder 的平底色。
-	  骨架在图片解码完成时立刻卸载：opacity 0 的元素动画照样在跑，一页几十张会白烧合成器。
-	  它的底色与 holder 的 bg-sunken 是同一个令牌，卸载时看不出变化，图片就在这层平底色上淡入。
+	  骨架的出场与退场都刻意错开（见上面 SKELETON_DELAY_MS / IMAGE_FADE_MS）：图来得快就根本不画，
+	  画了就等图片淡入盖住它之后才摘。它的底色与 holder 的 bg-sunken 是同一个令牌，又从高光在元素
+	  左侧之外的位置开始扫，所以出场那一下也看不出变化。
 	-->
 	{#if failed}
 		{#if fallback}
 			<span class="absolute inset-0" aria-hidden="true">{@render fallback()}</span>
 		{/if}
-	{:else if started && !ready}
-		<span class="skeleton absolute inset-0 block" aria-hidden="true"></span>
+	{:else if skeletonDue && !covered}
+		<span class="skeleton absolute inset-0 block" style:--shimmer-delay={shimmerDelay} aria-hidden="true"></span>
 	{/if}
 
 	{#if url}

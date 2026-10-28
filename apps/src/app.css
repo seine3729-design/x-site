@@ -297,7 +297,8 @@
 	}
 	/* 扫光是一个和元素等宽的伪元素，用 transform 从左扫到右：这类动画跑在合成器线程，
 	   既不重绘也不占主线程，一屏几十个骨架同时动也不掉帧。两端透明所以没有硬边。
-	   底色与 .skeleton 自身一致，动画停下或被卸载时只剩一块平底色，看不出跳变。 */
+	   底色与 .skeleton 自身一致，动画停下或被卸载时只剩一块平底色，看不出跳变。
+	   起点在元素左侧之外（-100%），所以骨架刚挂上去那一帧高光还看不见，出场是无声的。 */
 	.skeleton::after {
 		content: '';
 		position: absolute;
@@ -305,6 +306,10 @@
 		background: linear-gradient(90deg, transparent, var(--raised), transparent);
 		transform: translate3d(-100%, 0, 0);
 		animation: var(--animate-shimmer);
+		/* 必须写在 animation 简写之后，否则被简写重置成 0。
+		   调用方按元素错开相位，免得一屏骨架的高光齐刷刷一起扫（见 BlobImage.svelte）；
+		   不设时就是 0，其余骨架（列表、评论区）保持原样。 */
+		animation-delay: var(--shimmer-delay, 0s);
 	}
 	/* 用户要求减少动态效果时不扫光，只留平底色（WCAG prefers-reduced-motion） */
 	@media (prefers-reduced-motion: reduce) {
