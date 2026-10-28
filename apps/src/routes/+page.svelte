@@ -50,7 +50,7 @@
 		</EmptyState>
 	</div>
 {:else}
-	<div class="page-x flex flex-col gap-0 pt-0 md:gap-3">
+	<div class="page-x flex flex-col gap-4 pt-0 md:gap-3">
 		{#each data.blocks as raw, index (raw.id)}
 			{@const block = titled(raw)}
 			<div class={deviceClass(block)}>

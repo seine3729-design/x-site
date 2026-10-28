@@ -110,6 +110,7 @@
 		feed
 		title={drama.title}
 		episodeLabel={i18n.t('episode.label', { n: episode.number })}
+		poster={episode.cover || drama.cover_portrait}
 		detailHref={i18n.path(dramaPath(drama.id))}
 		hasNext={hasNextEpisode}
 		hasPrev={false}

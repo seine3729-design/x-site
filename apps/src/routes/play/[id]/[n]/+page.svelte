@@ -336,6 +336,7 @@
 				{player}
 				title={drama.title}
 				{episodeLabel}
+				poster={episode.cover || drama.cover_portrait}
 				{detailHref}
 				hasNext={!!nextEpisode}
 				hasPrev={!!prevEpisode}

@@ -1,10 +1,13 @@
 <script lang="ts">
-	import { onMount, type Snippet } from 'svelte';
+	import { onDestroy, onMount, type Snippet } from 'svelte';
 	import { page } from '$app/state';
 	import { clock } from '#lib/format.ts';
 	import AdSlot from '#lib/home/AdSlot.svelte';
 	import { getI18n } from '#lib/i18n/context.ts';
 	import { splitLocale } from '#lib/i18n/locales.ts';
+	import { loadBlobUrl } from '#lib/media/blob-image.ts';
+	import { imageCandidates, imageSources } from '#lib/media/image.ts';
+	import { getSite } from '#lib/site.ts';
 	import Icon from '#lib/ui/Icon.svelte';
 	import AccessWall from './AccessWall.svelte';
 	import { SPEEDS, type PlayerController } from './controller.svelte.ts';
@@ -30,6 +33,11 @@
 		backdrop?: Snippet;
 		/** 刷剧流：上下滑由外层滚动处理，播放器只接单击与长按 */
 		feed?: boolean;
+		/**
+		 * 当前这一集的封面（图片 key 或完整地址）。首帧出来之前铺在画面上。
+		 * 没有它的话，选源 + 清单 + 首个切片这段时间画面上只有一个转圈，很容易被当成「加载很慢」。
+		 */
+		poster?: string;
 	};
 
 	let {
@@ -47,10 +55,13 @@
 		oncancelcountdown,
 		overlay,
 		backdrop,
-		feed = false
+		feed = false,
+		poster
 	}: Props = $props();
 
 	const i18n = getI18n();
+	// 部署配置，整个页面生命周期内不变：初始化时读一次（getSite 用 context，不能放进 $effect）
+	const site = getSite();
 	// 试看提示条点击去登录 / 开通会员，登录后回到当前页（去掉语言前缀，与 AccessWall 一致）
 	const trialNext = $derived(encodeURIComponent(splitLocale(page.url.pathname).path + page.url.search));
 	let video = $state<HTMLVideoElement>();
@@ -71,6 +82,75 @@
 	$effect(() => {
 		if (player.phase === 'paused') {
 			pausedOnce = true;
+		}
+	});
+
+	/**
+	 * 被浏览器迫静音之后，等用户在页面上的任何一次手势，立刻把声音打开。
+	 * 不这么做的话用户必须专门去点那条「点这里开声音」提示，否则一路静音看下去——
+	 * 而刷剧流里滑动换条、点赞、拖进度条全都是手势，早就够条件恢复声音了。
+	 * 必须在事件处理器里同步调用（见 controller 的 tryUnmute 说明），不能换成定时器轮询。
+	 * 用捕获阶段 + passive：只是旁听，不影响页面自己的手势处理。
+	 */
+	$effect(() => {
+		if (!player.autoMuted) {
+			return;
+		}
+		const unmute = () => player.tryUnmute();
+		const add = { once: true, capture: true, passive: true } as const;
+		const remove = { capture: true } as const;
+		window.addEventListener('pointerdown', unmute, add);
+		window.addEventListener('touchstart', unmute, add);
+		window.addEventListener('keydown', unmute, { once: true, capture: true });
+		return () => {
+			window.removeEventListener('pointerdown', unmute, remove);
+			window.removeEventListener('touchstart', unmute, remove);
+			window.removeEventListener('keydown', unmute, remove);
+		};
+	});
+
+	/*
+	 * 分集封面：首帧出来之前铺在画面上。
+	 *
+	 * 用 <video> 原生的 poster 属性，而不是自己叠一层图片：浏览器会在拿到首帧的那一刻把它换掉，
+	 * 不需要我们判断「首帧到了没有」，object-fit 也自动和 <video> 一致、不会错位。
+	 * 地址走 loadBlobUrl（与 BlobImage 同一条路），不把 CDN 地址直接写进 poster——
+	 * 图片一律 fetch 取回转 blob: 显示（docs/04 C.8），顺带复用多条图片线路的回退。
+	 */
+	let posterUrl = $state<string | null>(null);
+	/** 当前 poster 的 blob 地址。用普通变量存：在 effect 里读 $state 会让这个 effect 自依赖 */
+	let posterBlob: string | null = null;
+
+	$effect(() => {
+		const key = poster;
+		if (!key) {
+			return;
+		}
+		let alive = true;
+		const sources = imageCandidates(imageSources(key, site.imageBases), { width: 540, format: 'webp' }, site.resizeOrigins);
+		void loadBlobUrl(sources, { priority: 'high' })
+			.then((next) => {
+				if (!alive) {
+					URL.revokeObjectURL(next);
+					return;
+				}
+				// 新的就绪了才换掉旧的，换集时画面上不会空一下
+				if (posterBlob) {
+					URL.revokeObjectURL(posterBlob);
+				}
+				posterBlob = next;
+				posterUrl = next;
+			})
+			.catch(() => undefined);
+		return () => {
+			alive = false;
+		};
+	});
+
+	onDestroy(() => {
+		if (posterBlob) {
+			URL.revokeObjectURL(posterBlob);
+			posterBlob = null;
 		}
 	});
 	$effect(() => {
@@ -289,7 +369,37 @@
 	const lockedPct = $derived(trialLocked && displayDuration > 0 ? (player.duration / displayDuration) * 100 : 100);
 	const progress = $derived(displayDuration > 0 ? (shownTime / displayDuration) * 100 : 0);
 	const bufferedPct = $derived(displayDuration > 0 ? (player.buffered / displayDuration) * 100 : 0);
-	const showSpinner = $derived(player.phase === 'loading' || (player.waiting && player.phase === 'playing'));
+	/**
+	 * 起播等太久才把转圈放出来。封面是静止的，一直不动用户分不清「在加载」还是「卡死了」，
+	 * 所以不能完全不给反馈；但常见情况下（封面铺着、两三秒内起播）不该出现转圈。
+	 */
+	const STALL_HINT_MS = 2500;
+	let stallHint = $state(false);
+
+	// 还没拿到首帧就一直在等，超过阈值把转圈放出来
+	$effect(() => {
+		if (player.hasFrame) {
+			stallHint = false;
+			return;
+		}
+		const timer = setTimeout(() => (stallHint = true), STALL_HINT_MS);
+		return () => clearTimeout(timer);
+	});
+
+	/*
+	 * 首帧之前只要封面已经铺上就不转圈——画面上是这一集的封面，而不是一个空转圈（接近抖音的做法）。
+	 * 三个例外仍然要转：
+	 *   1. 封面还没取回来、或后台没给这一集配封面：画面是纯黑的，总得有反馈；
+	 *   2. 等了超过 STALL_HINT_MS 还没首帧：封面是静止的，得让用户知道还在加载而不是卡死了；
+	 *   3. 拿到首帧之后的缓冲卡顿：画面已有内容，转圈是在说「卡住了」。
+	 *
+	 * 判断基准是 hasFrame 而不是 phase：起播过程中 `play` 事件先到、数据还没来，
+	 * 此时 phase 已经是 'playing' 且 waiting 为真，与「播到一半卡住」的状态组合完全一样，
+	 * 用 phase 判断会让转圈在封面刚铺上时就冒出来（实测踩过）。
+	 */
+	const showSpinner = $derived(
+		player.hasFrame ? player.waiting && player.phase === 'playing' : !posterUrl || stallHint
+	);
 	const lineLabel = (index: number) => player.lines[index]?.name || i18n.t('player.lineN', { n: index + 1 });
 </script>
 
@@ -312,6 +422,7 @@
 		playsinline
 		preload="auto"
 		disablepictureinpicture
+		poster={posterUrl ?? undefined}
 		onclick={feedbackToggle}
 		ondblclick={toggleFullscreen}
 	></video>

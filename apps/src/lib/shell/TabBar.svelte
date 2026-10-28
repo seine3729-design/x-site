@@ -49,7 +49,7 @@
 					rel={item.external ? 'noopener noreferrer' : undefined}
 					aria-current={active ? 'page' : undefined}
 					data-sveltekit-preload-data="tap"
-					class="relative flex h-full flex-col items-center justify-center gap-0.5 text-[11px] font-medium text-fg-subtle transition-colors aria-[current=page]:text-fg"
+					class="relative flex h-full flex-col items-center justify-center gap-0.5 text-[11px] font-medium text-fg-subtle transition-[color,scale] duration-100 active:scale-95 aria-[current=page]:text-fg motion-reduce:transition-none motion-reduce:active:scale-100"
 				>
 					<span class="relative">
 						<Icon

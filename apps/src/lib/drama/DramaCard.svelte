@@ -31,7 +31,7 @@
 
 <a
 	href={href ?? i18n.path(dramaPath(card.id))}
-	class="group block min-w-0 rounded-card outline-offset-4"
+	class="group block min-w-0 rounded-card outline-offset-4 transition-transform duration-100 active:scale-[0.975] motion-reduce:transition-none motion-reduce:active:scale-100"
 	data-sveltekit-preload-data="hover"
 >
 	<div class="relative overflow-hidden rounded-card bg-sunken ring-1 ring-line ring-inset">

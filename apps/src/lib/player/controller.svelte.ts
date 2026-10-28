@@ -18,6 +18,8 @@ export type Wall = 'login' | 'vip' | 'unavailable' | 'unsupported' | 'notfound' 
 export type Phase = 'idle' | 'loading' | 'ready' | 'playing' | 'paused' | 'ended' | 'blocked';
 
 const MANUAL_LINE_KEY = 'xs_line_manual';
+/** 用户上一次对声音的选择（'1' 要声音 / '0' 要静音），只存偏好、不含身份信息 */
+const SOUND_KEY = 'xs_snd';
 const SPEEDS = [0.75, 1, 1.25, 1.5, 2] as const;
 export { SPEEDS };
 
@@ -38,6 +40,24 @@ function manualLine(): number | null {
 		return Number.isSafeInteger(value) && value > 0 ? value : null;
 	} catch {
 		return null;
+	}
+}
+
+/** 用户明确表达过的声音意愿；没表达过返回 null（按默认的「要声音」处理） */
+function soundPref(): boolean | null {
+	try {
+		const value = localStorage.getItem(SOUND_KEY);
+		return value === '1' ? true : value === '0' ? false : null;
+	} catch {
+		return null;
+	}
+}
+
+function rememberSound(on: boolean): void {
+	try {
+		localStorage.setItem(SOUND_KEY, on ? '1' : '0');
+	} catch {
+		// 记不住就只影响下一次，本次仍按用户的操作走
 	}
 }
 
@@ -77,6 +97,13 @@ export class PlayerController {
 	/** 浏览器不允许有声自动播放，退回静音播放时为 true（提示「点画面开声音」） */
 	autoMuted = $state(false);
 	waiting = $state(false);
+	/**
+	 * 已经拿到首帧（video.readyState ≥ 2），画面上有东西可看了。
+	 * 用来区分「起播中」和「播到一半卡住」——这两种状态下 `phase` 与 `waiting` 的组合是一样的
+	 * （起播时 play 事件先到、数据还没来，于是 phase='playing' 且 waiting=true），
+	 * 只有它能分开，封面占位与加载转圈的显隐都靠它（见 Player.svelte 的 showSpinner）。
+	 */
+	hasFrame = $state(false);
 
 	lines = $state<PlaybackLine[]>([]);
 	lineIndex = $state(0);
@@ -184,6 +211,8 @@ export class PlayerController {
 				this.#stats?.('waiting', video.seeking);
 			}],
 			['canplay', () => (this.waiting = false)],
+			// readyState 到 2：首帧已就绪，浏览器此刻会把 poster 换成画面
+			['loadeddata', () => (this.hasFrame = true)],
 			['volumechange', () => {
 				this.muted = video.muted;
 				this.volume = video.volume;
@@ -234,6 +263,8 @@ export class PlayerController {
 		this.wall = null;
 		this.trialEnded = false;
 		this.phase = 'loading';
+		// 换集 / 换线路都要重新等首帧：封面会重新铺上，转圈也按「起播中」那套规则来
+		this.hasFrame = false;
 		this.currentTime = startAt;
 		this.duration = 0;
 		this.fullDuration = 0;
@@ -454,6 +485,11 @@ export class PlayerController {
 			return;
 		}
 		this.#wantsPlay = true;
+		// 用户上次是主动静音的，就别再试有声：试了也只会被策略拒一次再退回来，白走一轮，
+		// 还会让「点这里开声音」提示闪一下。
+		if (!video.muted && soundPref() === false) {
+			video.muted = true;
+		}
 		try {
 			await video.play();
 		} catch {
@@ -512,10 +548,32 @@ export class PlayerController {
 		this.seek((this.#video?.currentTime ?? 0) + delta);
 	}
 
+	/**
+	 * 拿到用户手势之后把声音打开，只在被迫静音（autoMuted）时有效。
+	 *
+	 * 浏览器只允许在页面获得「用户激活」之后有声播放，所以这个**必须从真实手势的事件处理器里
+	 * 同步调用**；在定时器或异步回调里改 muted，正在播的视频会被浏览器直接暂停。
+	 * 调用方见 `Player.svelte` 挂的一次性交互监听：用户滑刷剧流、点任何按钮都算，
+	 * 不用非得去点那条「点这里开声音」提示。
+	 *
+	 * 这里不写 rememberSound：用户只是碰了一下屏幕，并没有表达「我要声音」，
+	 * 记下来会把默认值固化成用户选择，之后他主动静音反而被下一次的自动恢复覆盖掉。
+	 */
+	tryUnmute() {
+		const video = this.#video;
+		if (!video || !this.autoMuted || soundPref() === false) {
+			return;
+		}
+		video.muted = false;
+		// 余下的交给 volumechange：它会把 autoMuted 清掉、同步 muted
+	}
+
 	setMuted(value: boolean) {
 		if (this.#video) {
 			this.#video.muted = value;
 		}
+		// 这是用户自己按的开关，记住它：下次进来直接按他的选择走
+		rememberSound(!value);
 	}
 
 	setVolume(value: number) {

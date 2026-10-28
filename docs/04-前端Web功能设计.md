@@ -182,8 +182,11 @@ apps/src/
 - 手势监听使用 `passive` 事件，滑动动画只改 `transform`，保持 60fps。
 
 #### 6.4 自动播放与声音
-- 默认静音自动播放，提示「点画面开声音」；iOS 提示「只能用侧边音量键调音量」[推断]。
+- **声音默认开着，不是默认静音**（`PlayerController.muted` 初值 `false`）：起播先尝试有声，被浏览器的自动播放策略拒掉才退回静音并置 `autoMuted`，画面上出现「点这里开声音」。**做不到「首次进入就有声自动播放」**——没有用户激活时有声 `play()` 必然被拒，这是浏览器硬限制，只能尽快恢复。
+- **拿到任何一次用户手势就自动恢复声音**：`autoMuted` 为真时 `Player.svelte` 挂一次性的 `pointerdown` / `touchstart` / `keydown` 监听（捕获 + passive，只旁听不干扰页面自己的手势），触发时调 `controller.tryUnmute()`。刷剧流里滑动换条、点赞、拖进度条都算手势，用户不必专门去点那条提示。**`tryUnmute()` 必须在手势事件处理器里同步调用**：在定时器或异步回调里改 `muted`，正在播的视频会被浏览器直接暂停。
+- **记住用户自己按的开关**：`setMuted()` 把选择写进 `xs_snd`（`'1'` 要声音 / `'0'` 要静音，本机偏好、不含身份信息）。下次起播若偏好是静音就直接静音播放、不再试有声——省掉一次必然失败的 `play()`，也不会让提示闪一下；自动恢复同样尊重它。`tryUnmute()` 刻意**不**写偏好：用户只是碰了下屏幕，并没有表达「我要声音」，记下来会把默认值固化成用户选择。
 - 不支持网页全屏时提示「横过手机看更大」；横屏片源提示「转动手机」。
+- **验收注意**：验静音策略相关行为时，无头 Chrome **不能**加 `--autoplay-policy=no-user-gesture-required`——加了就绕过策略、`muted` 恒为 false，测不出静音回退（只有验「单击暂停/播放」时才需要加它让视频能起播）。实测基线：进刷剧页后当前条 `muted=true` 且页面出现「开声音」提示；一次真实滑动后 `muted=false` 且 `paused=false`（画面没被恢复声音弄停）；点静音按钮后 `xs_snd=0`，带这个偏好重开页面 `muted=true` 且不再弹提示。
 
 #### 6.5 续播/连播/试看
 - 断点续播：显示「上次看到 X」，可从头播；进度每 15 秒及暂停/切集/`visibilitychange` 时上报。
@@ -292,6 +295,14 @@ apps/src/
 - 清单与 AES-128 内容密钥走加密接口（`#lib/player/secure-hls.ts` 的自定义加载器只接管同源 `/api/` 请求），切片由 hls.js 默认加载器直接从 CDN 拉取并解密。
 - 不支持 MSE 的浏览器（如 iOS 17.1 以下 Safari）不回退原生 HLS（原生播放器取密钥时无法走加密接口），提示「升级系统或浏览器，或使用 APP 观看」。
 - 画质「自动」+ 各档；倍速（含临时 2x）；音量/静音/全屏；无画中画 [推断]。
+- **首帧之前铺当前集的封面**（`Player` 的 `poster` 属性，刷剧流与播放页都传 `episode.cover`，没配分集封面时回退 `drama.cover_portrait`）。选源 + 清单 + 首个切片这段时间画面上原来只有一个转圈，用户会以为「加载很慢」。
+  - 用 `<video>` 原生的 `poster` 而不是自己叠一层图片：浏览器在拿到首帧那一刻自动换掉它，不需要判断「首帧到了没有」，`object-fit` 也自动与 `<video>` 一致、不会错位。
+  - 地址走 `loadBlobUrl`（与 `BlobImage` 同一条路）转 `blob:`，不把 CDN 地址写进 `poster`（见 C.8 的约定），顺带复用多条图片线路的回退。
+  - 换集时**新封面就绪才换掉旧的**，画面不会空一下；代价是换集那一瞬间还是上一集的封面（同一部剧，视觉相近，比空白好）。
+  - 实测（把 `/api/v1/hls/` 各延迟 4 秒模拟慢网络）：刷剧页封面 780ms 就位、首帧 12.8 秒才到，首帧之前有 12 秒画面上是封面；播放页封面 2.6 秒、首帧 12.9 秒。本地环境视频起播极快时封面可能晚于首帧（实测 1431ms vs 931ms），那种情况下用户本来也不觉得慢，不影响要解决的场景。
+- **封面铺上之后不转圈**（接近抖音：画面上是这一集的封面，而不是一个空转圈）。三个例外仍然要转：① 封面还没取回来、或后台没给这一集配封面——画面是纯黑的，总得有反馈；② 等了超过 `STALL_HINT_MS`（2.5 秒）还没首帧——封面是静止的，得让用户知道还在加载而不是卡死了；③ 拿到首帧之后的缓冲卡顿——画面已有内容，转圈是在说「卡住了」。
+  - **判断基准是 `controller.hasFrame`（由 `loadeddata` 事件置位、每次 `#load` 重置），不是 `phase`**：起播过程中 `play` 事件先到、数据还没来，这时 `phase` 已经是 `'playing'` 且 `waiting` 为真，与「播到一半卡住」的状态组合一模一样。用 `phase` 判断会让转圈在封面刚铺上的同一刻冒出来（实测踩过：封面 2062ms 就位、转圈 2062ms 出现）。
+  - 实测：本地正常速度下「封面已铺上、还没首帧」这段 54 帧**全程 0 帧转圈**（播放页 26 帧同样 0）；封面还没取回来的 88 帧里 69 帧有转圈（例外 ①）；清单延迟 4 秒后转圈在开始等首帧约 2.5 秒时出现（例外 ②）。回归：起播、滑动换条、单击暂停、换集后播放器内转圈数均为 0，控制台无错误。
 - hls.js 配置：`startLevel` 依据上次测得带宽、`maxBufferLength` 移动端 15s / 桌面 30s、`backBufferLength` 10s（控制内存）。
 - 错误：「所有线路都不可用」(重试)、「视频数据出错（非网速问题）」(解码错误)。
 
@@ -454,6 +465,12 @@ apps/src/
 - 样式整份内联进 HTML（`inlineStyleThreshold: 160_000`，主样式表约 104 KB / br 约 14 KB），首屏没有渲染阻塞请求；`modulepreload` 由 SvelteKit 自动生成；整页只有一条 preconnect（`hooks.server.ts`）；第三方脚本（统计、广告）`defer` 且在 `requestIdleCallback` 后加载。
 - 图片经站点 Cloudflare 区域的 `/cdn-cgi/image/` 按显示尺寸实时缩放（同源，见 C.8 与 `08` 第 5 节）；首页轮播首图输出 `srcset`（手机 360/540/720/1080，电脑 720/1080/1440/1920），其余由 `BlobImage` 按实测尺寸挑一档。
 - SSR 页面缓存：首页/列表 `s-maxage=60, stale-while-revalidate=300`；详情 `s-maxage=120`；个人页 `private, no-store`。缓存键不含登录态，个性化数据（追剧状态、续播）由客户端二次请求填充。实现：`hooks.server.ts` 按路由 ID 查 `#lib/server/cache-policy.ts` 的登记表写 `Cache-Control`（浏览器 `max-age=0`，只让 CDN 缓存）；未登记的路由、非 200、写 Cookie 的响应一律 `private, no-store`，新增公共页面要在表中登记；load 里用 `setHeaders` 自定的不覆盖；客户端导航的 `__data.json` 由 SvelteKit 固定为 `no-store`。
+- **客户端导航的等待要交代清楚**（用户反馈「移动端切换页面有点卡顿」）。`__data.json` 被固定成 `no-store`、拿不到边缘缓存，每次切页都要一次完整的服务端往返——线上实测详情页 ttfb 约 310ms、从按下到出内容约 616ms，这个往返省不掉；原来这段时间界面一点变化都没有，所以做了三件事：
+  - **顶部进度条**（`+layout.svelte` 的 `.nav-progress`）：只动 `transform: scaleX()`，8 秒 ease-out 曲线前期飞快、后期几乎不动，导航完成时元素直接卸载。延迟 `NAV_HINT_MS`（180ms）才显示，命中预加载缓存的快导航不会闪一下。
+  - **计时必须从「点下链接」开始，不能挂在 `onNavigate` 上**：`preload-data` 在触摸按下时就去取数据了，真正的等待发生在 `onNavigate` **之前**。实测把 `__data.json` 延迟 600ms，`onNavigate` 直到 600ms 才进入、之后到落地只剩 85ms，挂在它上面的 180ms 定时器还没到就被 `afterNavigate` 清掉——进度条等于永远不出现（踩过）。现在在 `document` 的 click 捕获阶段判断是站内链接就开始计时（排除新窗口、下载、外站、点的就是当前页），另加 8 秒兜底清除：SvelteKit 判定这次点击不需要导航时 `afterNavigate` 不会来。代码触发的 `goto` 在 `onNavigate` 里补一次计时。
+  - **页面切换动画**：`onNavigate` + View Transitions API，旧页淡出 140ms、新页淡入并上移 220ms，两段重叠。三个前提缺一个就跳过（渐进增强）：浏览器支持（Chrome 111+ / Safari 18+，而本站 JS 基线是 Chrome 100，必须特性检测）、用户没要求减少动效、**这次导航换了路由模板**——同一模板内部不做整页过渡，播放页换集走的是 `goto(..., { replace: true })`，整屏淡入淡出会让播放器画面闪一下。注意它**不能**让等待变短：`startViewTransition` 的回调里要 `await navigation.complete`，动画是数据就绪之后才跑的，等待期间靠进度条交代。
+  - **按下即时反馈**：剧卡 `active:scale-[0.975]`、底栏项 `active:scale-95`，100ms 过渡，`motion-reduce` 下不缩放。**Tailwind 4 的 `scale-*` 设的是独立的 `scale` 属性，不是 `transform: scale()`**，所以过渡属性必须覆盖 `scale`：`transition-transform` 在 v4 里已含 `transform, translate, scale, rotate`，但手写的 `transition-[color,transform]` 不含 scale，缩放会变成瞬间跳变（踩过，已改为 `transition-[color,scale]`）。
+  - 实测：慢导航（延迟 600ms、落地 874ms）进度条 +258ms 出现、+833ms 消失；快导航（落地 125ms）进度条正确地不出现、切换动画跑了 14 帧。按下反馈用 CDP 的 `CSS.forcePseudoState` 验证规则生效（剧卡 `scale=0.975`、底栏 `0.95`，过渡属性都含 `scale`）。**注意 CDP 合成的触摸事件不驱动 `:active` 状态机**，所以「真实手指按下是否触发」与「滚动时会不会误触发缩放」在无头环境验不出来，要在真机上确认。
 - 源站动态压缩（未经 CDN 的流量）：`#lib/server/compress.ts` 用 `node:zlib` 流式压缩（Brotli 质量 5 / gzip），在线程池执行、不缓冲整页，不阻塞事件循环也不打断流式 SSR；静态资源由 adapter 预压缩。
 - 首屏体积检查：`bun run build` 后执行 `bun run budget`，按 SvelteKit 构建清单统计每个页面首次访问要加载的 JS（br）与内联样式，超过 90 KB 时失败（CI 接入随 X0-3）。
 - `Bun.Image` 用于 BFF 侧生成/缩放分享图，产物写对象存储，不在请求路径实时渲染。
